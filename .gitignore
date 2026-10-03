@@ -2,9 +2,10 @@
 .env
 
 # runtime output and live state (rebuilt by the bots)
+logs/
 *.log
-arb_races*.json
-mapping.before-*.csv
+data/arb_races*.json
+data/backups/
 
 # the platform's own API spec (download it from the contest site)
 api-1.json

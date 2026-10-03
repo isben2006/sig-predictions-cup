@@ -4,10 +4,10 @@ Automated trading for the SIG Predictions Cup, a play-money prediction-market co
 2026 US midterm elections (~3,900 participants, Oct 1 – Nov 4 2026). Two strategies run in one
 loop against the contest's REST API:
 
-1. **Fair-value gap trading** (`cup_bot.py`): prices every contest contract against the
+1. **Fair-value gap trading** (`bot/strategies/gap.py`): prices every contest contract against the
    real-money markets on Kalshi and Polymarket, buys when the contest is cheap, and sells when
    it converges.
-2. **D + R arbitrage** (`arb_bot.py`): in a two-candidate race exactly one of Democrat and
+2. **D + R arbitrage** (`bot/strategies/arb.py`): in a two-candidate race exactly one of Democrat and
    Republican wins, so buying both sides locks in a profit whenever the contest prices them
    inconsistently.
 
@@ -43,7 +43,7 @@ Goal: a top 5–10% finish with low variance, rather than a lottery-style shot a
 ### Running both on the same races
 The account only shows one net position per contract, so the strategies are coordinated
 explicitly:
-- The arb keeps a **share ledger** (`arb_races.json`) of exactly which shares belong to pairs.
+- The arb keeps a **share ledger** (`data/arb_races.json`) of exactly which shares belong to pairs.
   It is updated from exact fill counts, including fills that race a cancel.
 - The gap strategy trades only the shares that aren't locked, and never buys the side opposite
   a locked leg. On this platform, opposite-side buys net against existing shares.
@@ -60,26 +60,48 @@ explicitly:
   backoff on 429/5xx responses. Orders carry idempotency keys, so retries can't double-place.
 - **Unattended operation**: the loop survives errors and logs with timestamps. `SIGTERM` finishes
   the current cycle (orders + ledger) before exiting, so restarts are always safe.
+- **Notifications**: plain-language phone messages (start, stop, repeated failures, a daily summary
+  that flags anything unusual) via ntfy.sh.
 - **Measurement**: an hourly snapshot (`stats.csv`) of rank, the top-5%/10% cutoffs, and P&L
   three ways:
   - **leaderboard**: valued at the contest's lagging trade-average prices
   - **sell-now**: everything sold at the current bids
   - **fair value**: valued at Kalshi/Polymarket prices
 
+## Code layout
+
+```
+main.py                    command line + main loop (the only file you run)
+bot/
+  common.py                contest API client, mapping file, Kalshi/Polymarket fair values
+  markets.py               setup: download contest markets, auto-map them to Kalshi/Polymarket
+  reporting.py             stats.csv snapshots, P&L views, phone notifications, daily summary
+  strategies/
+    gap.py                 fair-value gap trading (entry/exit rules, Kelly sizing, risk limits)
+    arb.py                 D + R arbitrage (pair logic, share ledger, repair, early exit)
+data/                      mapping.csv, stats.csv, arb_races.json (live arb ledger, not in git)
+logs/                      bot.log (not in git)
+```
+
+Each cycle `main.py trade --arb` runs the arb step, then the gap step, then (hourly) the stats snapshot
+and notifications. Paths are anchored to the project folder, so the bot runs from any directory; tests
+point `SIG_DATA_DIR` / `SIG_LOG_DIR` at a scratch folder so they can't touch the live ledger.
+
 ## Usage
 
 ```bash
 pip install requests
 echo "SIG_API_KEY=your_key" > .env            # contest API key (read + trade)
+echo "NTFY_TOPIC=some-private-name" >> .env    # optional: phone notifications via the ntfy app
 
-python3 cup_bot.py markets                     # download contest markets -> mapping.csv
-python3 cup_bot.py automap                     # fill in Kalshi / Polymarket mappings
-python3 cup_bot.py scan --arb                  # dry run: show what both strategies would do
-python3 cup_bot.py trade --arb --loop 60       # trade, one cycle a minute
-python3 cup_bot.py stats                       # append a snapshot to stats.csv
-python3 cup_bot.py positions | leaderboard
+python3 main.py markets                     # download contest markets -> data/mapping.csv
+python3 main.py automap                     # fill in Kalshi / Polymarket mappings
+python3 main.py scan --arb                  # dry run: show what both strategies would do
+python3 main.py trade --arb --loop 60       # trade, one cycle a minute
+python3 main.py stats                       # append a snapshot to data/stats.csv
+python3 main.py positions | leaderboard
 
-pkill -f "cup_bot.py trade"                    # graceful stop
+pkill -f "main.py trade"                    # graceful stop
 ```
 
 ## Results

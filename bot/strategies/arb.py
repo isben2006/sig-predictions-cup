@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 Predictions Cup D + R arbitrage bot.
 
@@ -11,26 +10,19 @@ to settlement.
 
 Only trades races where Kalshi gives candidates other than D and R <= 2% combined (max_third_party),
 and skips races Kalshi doesn't cover. It also skips every race that has a mapping in mapping.csv, so it
-never touches the races cup_bot.py trades (and cup_bot.py never sells one leg of a pair).
+never touches the races the gap strategy trades (and gap.py never sells one leg of a pair).
 Don't add a mapping for a race listed in arb_races.json.
 
-Commands
-  python3 arb_bot.py scan                # show pairs it would buy (no orders)
-  python3 arb_bot.py trade               # buy them (asks to confirm)
-  python3 arb_bot.py trade --loop 300    # repeat every 300 s
-  python3 arb_bot.py trade --max-race 0.005 --max-pairs 1    # small first live test
-
-Running unattended, next to cup_bot.py
-  caffeinate -i nohup python3 arb_bot.py trade --loop 300 --yes > /dev/null 2>&1 &
-  tail -f arb_bot.log
-  pkill -f "arb_bot.py trade"
+Called once per cycle from main.py (`main.py trade --arb`).
 """
-import argparse, json, math, re, sys, time, traceback
+import json, math, time
 
 import requests
 
-from cup_bot import (API_KEY, KALSHI_EVENT_URL, ORDER_TTL_SECONDS, TICK, Cup, Tee, _num, kalshi_event,
-                     load_mapping, party_of, race_key)
+import os
+
+from bot.common import (DATA_DIR, KALSHI_EVENT_URL, ORDER_TTL_SECONDS, TICK, _num, kalshi_event, load_mapping,
+                        party_of, race_key)
 
 ARB = dict(
     min_profit=0.01,      # lock in at least 1 point per pair (pair costs <= 0.99)
@@ -44,7 +36,7 @@ ARB = dict(
     max_cash=0.50,        # never use more than 50% of current cash in one run
     unwind_keep=0.5,      # sell a pair early if that keeps >= 50% of its settlement profit
 )
-STATE_FILE = "arb_races.json"   # race -> {"side": "yes"|"no", "legs": {exchange_id: signed shares we own},
+STATE_FILE = os.path.join(DATA_DIR, "arb_races.json")   # race -> {"side": "yes"|"no", "legs": {exchange_id: signed shares we own},
                                 #          "unwind": {party: min sell price}} (only while a sale is part-done)
 MAX_REPAIR_PAIR = 1.0025        # completing a broken pair may cost up to 1/4 point per pair: a tiny
                                 # certain loss beats holding an unhedged leg (avg cost isn't exactly on tick)
@@ -156,7 +148,7 @@ def locked_shares():
 
 def run(cup, t, live, cfg, max_pairs=0, shared=False):
     """One arbitrage pass. shared=False: stay out of every race mapped in mapping.csv (the gap bot
-    runs separately). shared=True: trade every race; cup_bot runs right after, using locked_shares()."""
+    runs separately). shared=True: trade every race; gap.py runs right after, using locked_shares()."""
     slug, tid = t["slug"], t["id"]
     t = cup.tournament(slug)                         # refresh balance
     cash, start = t["myBalance"], t["initialBalance"]
@@ -190,6 +182,8 @@ def run(cup, t, live, cfg, max_pairs=0, shared=False):
         sign = 1 if side == "yes" else -1
         legs = state[race]["legs"]
         legs[ex] = legs.get(ex, 0) + (sign if action == "buy" else -sign) * filled
+        if live:
+            save_state(state)                        # on disk at once, so the ledger is never stale
 
     def race_cost(race):                             # everything in the race, gap shares included
         return sum(abs(pos[e]["costBasis"]) for e in races[race].values() if e in pos)
@@ -348,45 +342,3 @@ def run(cup, t, live, cfg, max_pairs=0, shared=False):
     finally:
         if live:
             save_state(state)
-
-
-def main():
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("command", choices=["scan", "trade"])
-    ap.add_argument("--tournament", help="tournament slug (auto-detected if omitted)")
-    ap.add_argument("--loop", type=int, default=0, help="repeat every N seconds")
-    ap.add_argument("--max-race", type=float, help="override the per-race cap, e.g. 0.005 for a small test")
-    ap.add_argument("--max-pairs", type=int, default=0, help="open at most N new pairs per run (0 = no limit)")
-    ap.add_argument("--no-yes-both", action="store_true", help="only NO+NO pairs (no third-party risk at all)")
-    ap.add_argument("--yes", action="store_true", help="skip the confirmation prompt (for unattended runs)")
-    ap.add_argument("--log", default="arb_bot.log", help="log file ('' to disable)")
-    a = ap.parse_args()
-    if a.log:
-        sys.stdout = sys.stderr = Tee(a.log)
-
-    cfg = dict(ARB)
-    if a.max_race is not None:
-        cfg["max_race"] = a.max_race
-    if a.no_yes_both:
-        cfg["yes_both"] = False
-    cup = Cup(API_KEY)
-    t = cup.tournament(a.tournament)
-    print(f"Tournament: {t['name']} ({t['slug']})")
-    print("Arb settings: " + ", ".join(f"{k}={v}" for k, v in cfg.items()))
-    live = a.command == "trade"
-    if live and not a.yes and input("This places real contest orders. Type YES to continue: ").strip() != "YES":
-        sys.exit("Cancelled.")
-    while True:
-        try:
-            run(cup, t, live, cfg, a.max_pairs)
-        except Exception:
-            if not a.loop:
-                raise
-            print(f"\n! run failed, retrying in {a.loop}s:\n{traceback.format_exc()}")
-        if not a.loop:
-            break
-        time.sleep(a.loop)
-
-
-if __name__ == "__main__":
-    main()
