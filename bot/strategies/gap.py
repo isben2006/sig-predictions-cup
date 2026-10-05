@@ -64,10 +64,14 @@ LONGSHOT_MIN_RATIO = 1.5
 LONGSHOT_MIN_EDGE = 0.02
 
 
-def wants_entry(price, fair, cfg, sure=False):
+def wants_entry(price, fair, cfg, sure=False, bar=None, days_left=0):
     """Is buying at `price` (YES or NO) good enough, given that side's fair value?
-    Near-certain contracts (`sure`) need the bigger sure_edge, since that money is tied up longer."""
+    Near-certain contracts (`sure`) need sure_edge AND, while rotation is on (`bar` = rotation_bar()),
+    must earn more per day held to settlement than the arb: they rarely converge early, so otherwise
+    the rotation rule would sell them right back as soon as the price allowed."""
     if price is None or price <= 0:
+        return False
+    if sure and bar is not None and (fair - price) / price / days_left < bar:
         return False
     if fair - price >= (cfg["sure_edge"] if sure else cfg["entry_edge"]):
         return True
@@ -76,8 +80,10 @@ def wants_entry(price, fair, cfg, sure=False):
 
 
 def _parse_ts(s):
-    """'2026-10-04T19:11:18.7351446+00:00' -> aware datetime (fromisoformat wants <= 6 fraction digits)."""
-    return datetime.fromisoformat(re.sub(r"(\.\d{6})\d+", r"\1", s.replace("Z", "+00:00")))
+    """'2026-10-04T19:11:18.7351446+00:00' -> aware datetime (Python 3.9's fromisoformat wants exactly
+    3 or 6 fraction digits, the API sends anywhere from 1 to 7, so pad/trim to 6)."""
+    return datetime.fromisoformat(re.sub(r"\.(\d+)", lambda m: "." + m.group(1)[:6].ljust(6, "0"),
+                                         s.replace("Z", "+00:00")))
 
 
 def held_days(position):
@@ -90,16 +96,23 @@ def held_days(position):
     return sum(l["quantity"] * (now - _parse_ts(l["openedAt"])).total_seconds() for l in lots) / total / 86400
 
 
-def rotation_reason(cfg, arb_info, position, held, paid, sell_px, buy_px, side_fair, sure, days_left):
-    """Why this gap position should be sold to move its money into the arb, or None to keep it."""
-    if not (cfg.get("rotate") and arb_info and held) or days_left <= cfg["rotate_min_days_left"]:
+def rotation_bar(cfg, arb_info, days_left):
+    """Daily return a gap position must beat to keep its money out of the arb, or None while rotation
+    is off: disabled, no arb data yet, final week, no arbs waiting for cash, or the arb earning too little."""
+    if not (cfg.get("rotate") and arb_info) or days_left <= cfg["rotate_min_days_left"]:
         return None
-    if sell_px is None or sell_px < paid or arb_info["unfunded"] <= 0 or arb_info["rate"] < cfg["rotate_min_arb"]:
-        return None                                # never at a loss; only when arbs are waiting for cash
-                                                   # and actually earning well
+    if arb_info["unfunded"] <= 0 or arb_info["rate"] < cfg["rotate_min_arb"]:
+        return None
+    return arb_info["rate"] * cfg["rotate_haircut"]
+
+
+def rotation_reason(cfg, bar, position, held, paid, sell_px, buy_px, side_fair, sure, days_left):
+    """Why this gap position should be sold to move its money into the arb, or None to keep it.
+    `bar` = rotation_bar() (None = rotation off)."""
+    if bar is None or not held or sell_px is None or sell_px < paid:
+        return None                                # never at a loss
     hold_daily = (side_fair - sell_px) / sell_px / days_left    # what staying earns per day (to settlement)
-    arb_daily = arb_info["rate"] * cfg["rotate_haircut"]
-    if hold_daily >= arb_daily:
+    if hold_daily >= bar:
         return None
     if not sure:
         age = held_days(position)
@@ -107,7 +120,7 @@ def rotation_reason(cfg, arb_info, position, held, paid, sell_px, buy_px, side_f
             return None                            # still has time to converge
         if buy_px is not None and side_fair - buy_px >= cfg["entry_edge"]:
             return None                            # we'd buy it today: still a top gap trade
-    return f"holding earns {hold_daily:.2%}/day < arb {arb_daily:.2%}/day"
+    return f"holding earns {hold_daily:.2%}/day < arb {bar:.2%}/day"
 
 
 def kelly_fraction(price, fair):
@@ -144,6 +157,7 @@ def run(cup, t, live, cfg, max_orders=0, locked=None, arb_info=None):
     days_left = ((_parse_ts(t["endDate"]) - datetime.now(timezone.utc)).total_seconds() / 86400
                  if t.get("endDate") else 0)       # unknown end date -> 0 -> no rotation
     rotated = False                                # at most one rotation per cycle
+    bar = rotation_bar(cfg, arb_info, days_left)   # arb's daily return to beat (None = rotation off)
 
     print(f"\n{datetime.now():%H:%M:%S}  cash {cash:,.0f}  equity {equity:,.0f} {t['currencyName']}"
           f"  |  {len(mapping)} mapped contracts")
@@ -176,7 +190,7 @@ def run(cup, t, live, cfg, max_orders=0, locked=None, arb_info=None):
         no_ask = 1 - bid if bid is not None else None  # what we pay for NO
         signal = ""
         rotate_why = None if rotated or not held else rotation_reason(
-            cfg, arb_info, p, held, paid, bid if held > 0 else no_bid, ask if held > 0 else no_ask,
+            cfg, bar, p, held, paid, bid if held > 0 else no_bid, ask if held > 0 else no_ask,
             fair if held > 0 else 1 - fair, sure, days_left)
 
         # exits first: has the gap closed (or flipped)?
@@ -216,10 +230,10 @@ def run(cup, t, live, cfg, max_orders=0, locked=None, arb_info=None):
             rotated = True
 
         # entries: contest cheaper than fair value -- sized after the loop, best first
-        elif held >= 0 and lock >= 0 and wants_entry(ask, fair, cfg, sure):
+        elif held >= 0 and lock >= 0 and wants_entry(ask, fair, cfg, sure, bar, days_left):
             candidates.append(((fair - ask) / ask, ex_id, "yes", ask, fair, held_cost, held != 0, name, sure))
             signal = f"edge YES {fair - ask:+.3f} ({(fair - ask) / ask:+.0%} return)"
-        elif held <= 0 and lock <= 0 and wants_entry(no_ask, 1 - fair, cfg, sure):
+        elif held <= 0 and lock <= 0 and wants_entry(no_ask, 1 - fair, cfg, sure, bar, days_left):
             candidates.append((((1 - fair) - no_ask) / no_ask, ex_id, "no", no_ask, 1 - fair, held_cost, held != 0, name, sure))
             signal = f"edge NO {(1 - fair) - no_ask:+.3f} ({((1 - fair) - no_ask) / no_ask:+.0%} return)"
 
