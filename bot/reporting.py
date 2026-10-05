@@ -119,6 +119,25 @@ def notify(title, message, priority="default", tags=""):
         print(f"  (notification failed: {e})")
 
 
+def notify_gap_sales(sold):
+    """One plain-language phone message per gap position sold (sales reported by gap.run)."""
+    for x in sold:
+        result = "profit" if x["profit"] >= 0 else "loss"
+        if x["why"].startswith("rotation"):
+            why = ("its money earns more in the arbitrage right now ("
+                   + x["why"].split(": ", 1)[1].replace("holding earns", "holding it earned") + ")")
+        elif x["why"] == "converged":
+            why = ("it reached its fair value, so the edge is collected" if x["profit"] >= 0 else
+                   "it reached its fair value, but news had moved that value below what we paid")
+        else:
+            why = x["why"]
+        msg = (f"Sold {x['shares']:,} {x['side']} of \"{x['title']}\" at {x['price']:.3f} "
+               f"(bought at {x['paid']:.3f}): {x['profit']:+,.0f} {result}. Why: {why}.")
+        if x["waiting"]:
+            msg += f" {x['waiting']:,} more shares are offered and should sell over the next minutes."
+        notify("Gap position sold", msg + " Nothing to do.", tags="moneybag" if x["profit"] >= 0 else "small_red_triangle_down")
+
+
 def _log_lines_since(hours, path=LOG_FILE):
     """Log lines from the last `hours` hours (lines start with 'YYYY-MM-DD HH:MM:SS')."""
     cutoff = (datetime.now() - timedelta(hours=hours)).strftime("%Y-%m-%d %H:%M:%S")

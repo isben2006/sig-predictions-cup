@@ -32,7 +32,8 @@ from datetime import datetime
 
 from bot.common import API_KEY, LOG_DIR, MAPPING_FILE, Cup, Tee
 from bot.markets import cmd_automap, cmd_markets
-from bot.reporting import RESTART_CMD, SUMMARY_HOUR, cmd_leaderboard, cmd_positions, daily_summary, log_stats, notify
+from bot.reporting import (RESTART_CMD, SUMMARY_HOUR, cmd_leaderboard, cmd_positions, daily_summary, log_stats,
+                           notify, notify_gap_sales)
 from bot.strategies import arb, gap
 
 
@@ -98,8 +99,10 @@ def main():
             # gap step first: the big edges get first claim on cash. It never touches arb pairs (the
             # ledger is saved after every arb fill), even without --arb: selling one leg would break a pair
             locked = arb.locked_shares() if os.path.exists(arb.STATE_FILE) else {}
-            gap.run(cup, t, live, cfg, a.max_orders, locked,
-                    arb_info=arb.rotation_info() if a.arb else None)   # enables rotation into the arb
+            sold = gap.run(cup, t, live, cfg, a.max_orders, locked,
+                           arb_info=arb.rotation_info() if a.arb else None)   # enables rotation into the arb
+            if live:
+                notify_gap_sales(sold)
             failures = 0
             if a.arb:                              # then the arb, with the cash that's left (minus its floor)
                 try:

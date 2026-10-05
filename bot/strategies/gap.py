@@ -139,6 +139,7 @@ def run(cup, t, live, cfg, max_orders=0, locked=None, arb_info=None):
     race_cap = start * cfg["max_race"]
     actions, candidates = [], []
     sold_cost = {}                                 # exchange_id -> cost of the gap shares we're selling
+    sale_info = {}                                 # exchange_id -> (title, paid, reason), for reporting sales
     sure_cost = 0.0                                # gap money in near-certain contracts
     days_left = ((_parse_ts(t["endDate"]) - datetime.now(timezone.utc)).total_seconds() / 86400
                  if t.get("endDate") else 0)       # unknown end date -> 0 -> no rotation
@@ -188,6 +189,7 @@ def run(cup, t, live, cfg, max_orders=0, locked=None, arb_info=None):
                 signal = f"SELL {held} YES @ {bid:.3f} ({why})"
                 actions.append((ex_id, "yes", "sell", held, bid))
                 sold_cost[ex_id] = held_cost
+                sale_info[ex_id] = (row["market_title"], paid, why)
                 if sure:
                     sure_cost -= held_cost
         elif held < 0 and no_bid is not None and (no_bid >= (1 - fair) - cfg["exit_band"] or (tp and no_bid >= paid + tp)):
@@ -198,6 +200,7 @@ def run(cup, t, live, cfg, max_orders=0, locked=None, arb_info=None):
                 signal = f"SELL {-held} NO @ {no_bid:.3f} ({why})"
                 actions.append((ex_id, "no", "sell", -held, no_bid))
                 sold_cost[ex_id] = held_cost
+                sale_info[ex_id] = (row["market_title"], paid, why)
                 if sure:
                     sure_cost -= held_cost
 
@@ -207,6 +210,7 @@ def run(cup, t, live, cfg, max_orders=0, locked=None, arb_info=None):
             signal = f"ROTATE: SELL {qty} {side.upper()} @ {px:.3f} ({rotate_why})"
             actions.append((ex_id, side, "sell", qty, px))
             sold_cost[ex_id] = held_cost
+            sale_info[ex_id] = (row["market_title"], paid, "rotation: " + rotate_why)
             if sure:
                 sure_cost -= held_cost
             rotated = True
@@ -274,17 +278,25 @@ def run(cup, t, live, cfg, max_orders=0, locked=None, arb_info=None):
 
     if not actions:
         print("\nNo trades this round.")
-        return
+        return []
     if max_orders and len(actions) > max_orders:     # exits come first in `actions`, then best entries
         print(f"\n--max-orders {max_orders}: keeping the first {max_orders} of {len(actions)} trades")
         actions = actions[:max_orders]
     if not live:
         print(f"\nDry run: {len(actions)} trade(s) would be placed. Use `trade` to execute.")
-        return
+        return []
+    sold = []                                      # what got sold this pass, for the caller to report
     for ex_id, side, action, qty, price in actions:
         try:
             r = cup.order(tid, ex_id, side, action, qty, price)
             print(f"  placed {action} {qty} {side} on {ex_id} @ {round_tick(price):.3f} "
                   f"-> filled {r.get('quantityTraded')}, resting={r.get('open')}")
+            filled = int(r.get("quantityTraded") or 0)
+            if action == "sell" and filled and ex_id in sale_info:
+                title, paid, why = sale_info[ex_id]
+                sold.append({"title": title, "side": side.upper(), "shares": filled, "price": round_tick(price),
+                             "paid": paid, "profit": filled * (round_tick(price) - paid), "why": why,
+                             "waiting": qty - filled if r.get("open") else 0})
         except Exception as e:
             print(f"  ! order failed on {ex_id}: {e}")
+    return sold
