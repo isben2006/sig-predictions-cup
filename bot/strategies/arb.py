@@ -8,10 +8,10 @@ The profit is locked in when a pair is bought. A pair is sold early (both legs t
 it now keeps at least half of that profit, which frees the cash for the next arb; otherwise it's held
 to settlement.
 
-Only trades races where Kalshi gives candidates other than D and R <= 2% combined (max_third_party),
-and skips races Kalshi doesn't cover. It also skips every race that has a mapping in mapping.csv, so it
-never touches the races the gap strategy trades (and gap.py never sells one leg of a pair).
-Don't add a mapping for a race listed in arb_races.json.
+YES+YES pairs are only bought where Kalshi gives candidates other than D and R <= 2% combined
+(max_third_party), and never where Kalshi has no such data. NO+NO pairs need no such filter.
+Both strategies share races: the share ledger (arb_races.json) records which shares belong to pairs,
+and gap.py never sells them or buys the opposite side.
 
 Called once per cycle from main.py (`main.py trade --arb`).
 """
@@ -26,18 +26,23 @@ from bot.common import (DATA_DIR, KALSHI_EVENT_URL, ORDER_TTL_SECONDS, TICK, _nu
 
 ARB = dict(
     min_profit=0.01,      # lock in at least 1 point per pair (pair costs <= 0.99)
-    max_third_party=0.02, # only trade races where Kalshi gives non-D/R candidates <= 2% combined
-                          # (Oct 2026: SD and ID Senate looked like 5-pt arbs but had independents at ~7.5%)
+    max_third_party=0.02, # YES+YES only in races where Kalshi gives non-D/R candidates <= 2% combined
+                          # (Oct 2026: SD and ID Senate looked like 5-pt arbs but had independents at ~7.5%).
+                          # NO+NO needs no filter: a third-party win makes both NO legs pay.
     yes_third_frac=0.5,   # YES+YES loses everything if a third party wins, so it also needs that chance
                           # to be <= half the locked profit (1-pt pair -> third parties <= 0.5%)
     yes_both=True,        # YES+YES pays 0 if a third party wins; never used in races with a 3rd contract
     max_race=0.05,        # at most 5% of starting balance in one race's pair
-    max_total=0.40,       # at most 40% of starting balance in arb pairs overall
+    max_total=0.75,       # at most 75% of starting balance in arb pairs overall: the volume engine
+    keep_cash=0.02,       # never spend the last 2% of starting balance: cash for completing one-sided
+                          # fills (repairs aren't budget-limited). Raise it before election night.
     max_cash=0.50,        # never use more than 50% of current cash in one run
     unwind_keep=0.5,      # sell a pair early if that keeps >= 50% of its settlement profit
 )
 STATE_FILE = os.path.join(DATA_DIR, "arb_races.json")   # race -> {"side": "yes"|"no", "legs": {exchange_id: signed shares we own},
                                 #          "unwind": {party: min sell price}} (only while a sale is part-done)
+STATS_FILE = os.path.join(DATA_DIR, "arb_stats.json")   # recent locked-in profit + unfunded demand,
+                                # read by gap.py to decide whether moving money into the arb pays
 MAX_REPAIR_PAIR = 1.0025        # completing a broken pair may cost up to 1/4 point per pair: a tiny
                                 # certain loss beats holding an unhedged leg (avg cost isn't exactly on tick)
 
@@ -82,6 +87,35 @@ def load_state():
 def save_state(state):
     with open(STATE_FILE, "w") as f:
         json.dump(state, f, indent=1, sort_keys=True)
+
+
+def load_stats():
+    try:
+        with open(STATS_FILE) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {"since": time.time(), "fills": []}
+
+
+def save_stats(stats):
+    with open(STATS_FILE, "w") as f:
+        json.dump(stats, f)
+
+
+def rotation_info(window_h=48, min_history_h=12, max_age_s=900):
+    """What the arb has actually been earning, for gap.py's rotation rule:
+    {"rate": profit locked in per day as a share of arb capital (last `window_h` hours),
+     "unfunded": arbs skipped for lack of cash in the latest pass}.
+    None until there are `min_history_h` hours of fresh data: then gap.py never rotates."""
+    s = load_stats()
+    now = time.time()
+    if now - s.get("time", 0) > max_age_s or not s.get("capital"):
+        return None
+    span_h = min(window_h, (now - s["since"]) / 3600)
+    if span_h < min_history_h:
+        return None
+    profit = sum(x for ts, x in s["fills"] if ts >= now - window_h * 3600)
+    return {"rate": profit / s["capital"] / (span_h / 24), "unfunded": s.get("unfunded", 0)}
 
 
 def ask_ladder(book, side):
@@ -188,9 +222,10 @@ def run(cup, t, live, cfg, max_pairs=0, shared=False):
     def race_cost(race):                             # everything in the race, gap shares included
         return sum(abs(pos[e]["costBasis"]) for e in races[race].values() if e in pos)
 
+    stats, unfunded, in_arbs = load_stats(), 0, 0.0
     try:                                             # save the ledger even if the pass fails midway
         in_arbs = sum(leg_cost(r, e) for r, st in state.items() for e in st["legs"])
-        budget = min(cash * cfg["max_cash"], start * cfg["max_total"] - in_arbs)
+        budget = min(cash * cfg["max_cash"], start * cfg["max_total"] - in_arbs, cash - start * cfg["keep_cash"])
         print(f"\n{time.strftime('%H:%M:%S')}  ARB  cash {cash:,.0f} {t['currencyName']}  |  "
               f"{in_arbs:,.0f} in {len(state)} pair(s)  |  budget this run {max(budget, 0):,.0f}")
 
@@ -290,15 +325,17 @@ def run(cup, t, live, cfg, max_pairs=0, shared=False):
             print(f"  no D + R pairs locking in >= {cfg['min_profit']:.3f} right now")
 
         placed = 0
-        for profit, race, side in opps:
+        for i, (profit, race, side) in enumerate(opps):
             if max_pairs and placed >= max_pairs:
                 print(f"  --max-pairs {max_pairs} reached")
                 break
             if budget <= 0:
                 print("  arb budget used up")
+                unfunded += len(opps) - i                # waiting for money (gap.py may rotate cash here)
                 break
-            third = third_party_chance(race)
-            if third is None or third > cfg["max_third_party"]:
+            # third parties only threaten YES+YES (both legs lose); a third-party win pays NO+NO twice
+            third = third_party_chance(race) if side == "yes" else None
+            if side == "yes" and (third is None or third > cfg["max_third_party"]):
                 why = "no Kalshi odds for third parties" if third is None else f"third parties at {third:.1%} on Kalshi"
                 print(f"  {race:28s} {side.upper()}+{side.upper()} {profit:+.3f}: skip ({why})")
                 continue
@@ -319,6 +356,7 @@ def run(cup, t, live, cfg, max_pairs=0, shared=False):
             if qty <= 0:
                 print(f"  {race:28s} {side.upper()}+{side.upper()} {profit:+.3f}: "
                       + ("at race cap" if race_room < budget else "no arb budget left this run"))
+                unfunded += race_room >= budget
                 continue
             print(f"  {race:28s} BUY {qty} {side.upper()} on D @<= {lim_d:.3f} and R @<= {lim_r:.3f}  "
                   f"(pair ~{avg:.3f}: locks {1 - avg:+.3f}/pair, {qty * (1 - avg):+,.0f} total)")
@@ -333,6 +371,7 @@ def run(cup, t, live, cfg, max_pairs=0, shared=False):
                     state.setdefault(race, {"side": side, "legs": {d: 0, r: 0}})
                     book(race, d, side, fd, "buy")
                     book(race, r, side, fr, "buy")
+                    stats["fills"].append([time.time(), min(fd, fr) * (1 - avg)])   # profit locked in
                 print(f"    filled D {fd} / R {fr}" + ("" if fd == fr else "  (uneven: repaired next run)"))
             except Exception as e:
                 print(f"  ! arb order failed on {race}: {e}")
@@ -342,3 +381,6 @@ def run(cup, t, live, cfg, max_pairs=0, shared=False):
     finally:
         if live:
             save_state(state)
+            stats.update(time=time.time(), capital=in_arbs, unfunded=unfunded,
+                         fills=[f for f in stats["fills"] if f[0] >= time.time() - 72 * 3600])
+            save_stats(stats)

@@ -2,8 +2,8 @@
 """
 Predictions Cup trading bots: command line and main loop.
 
-Each cycle runs the D+R arbitrage (bot/strategies/arb.py, with --arb), then fair-value gap
-trading (bot/strategies/gap.py), then the hourly stats snapshot and notifications (bot/reporting.py).
+Each cycle runs fair-value gap trading (bot/strategies/gap.py) first, then the D+R arbitrage
+(bot/strategies/arb.py, with --arb), then the hourly stats snapshot and notifications (bot/reporting.py).
 
 Commands
   python3 main.py markets      # download all contest markets into mapping.csv
@@ -49,7 +49,7 @@ def main():
     ap.add_argument("--log", default=os.path.join(LOG_DIR, "bot.log"), help="log file for scan/trade output ('' to disable)")
     ap.add_argument("--out", default=MAPPING_FILE, help="automap: where to write the filled-in mapping")
     ap.add_argument("--arb", action="store_true",
-                    help="each cycle, run the D+R arbitrage (bot/strategies/arb.py) first on every race, then the gap strategy")
+                    help="each cycle, run the gap strategy, then the D+R arbitrage (bot/strategies/arb.py) on every race")
     a = ap.parse_args()
     if a.log and a.command in ("scan", "trade"):
         sys.stdout = sys.stderr = Tee(a.log)
@@ -95,15 +95,17 @@ def main():
                 print(f"  (stats snapshot failed: {e})")
             last_stats = time.time()
         try:
-            if a.arb:                              # arb first; its pairs are then off-limits to the gap step
+            # gap step first: the big edges get first claim on cash. It never touches arb pairs (the
+            # ledger is saved after every arb fill), even without --arb: selling one leg would break a pair
+            locked = arb.locked_shares() if os.path.exists(arb.STATE_FILE) else {}
+            gap.run(cup, t, live, cfg, a.max_orders, locked,
+                    arb_info=arb.rotation_info() if a.arb else None)   # enables rotation into the arb
+            failures = 0
+            if a.arb:                              # then the arb, with the cash that's left (minus its floor)
                 try:
                     arb.run(cup, t, live, arb_cfg, shared=True)
                 except Exception:
                     print(f"\n! arb step failed:\n{traceback.format_exc()}")
-            # always respect existing arb pairs, even without --arb: selling one leg would break a pair
-            locked = arb.locked_shares() if os.path.exists(arb.STATE_FILE) else {}
-            gap.run(cup, t, live, cfg, a.max_orders, locked)
-            failures = 0
         except Exception:
             if not a.loop:
                 raise

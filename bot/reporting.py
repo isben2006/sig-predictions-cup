@@ -87,7 +87,11 @@ def log_stats(cup, t):
            "cutoff_top10": pnl_at(0.10), "leader_pnl": lb["leaderboard"][0]["pnl"] if lb["leaderboard"] else "",
            "sharpe_api": pnl.get("sharpe") if pnl.get("sharpe") is not None else ""}   # null early in the contest
     row["pnl_sell_now"], row["pnl_fair"] = pnl_views(cup, t, cup.positions(slug))
-    me = cup.leaderboard(slug, limit=1, offset=lb["myRank"] - 1)["leaderboard"] if lb["myRank"] else []
+    me = []
+    if lb["myRank"]:                                 # ranks can be tied: look around it for our own player id
+        my_id = cup.req("GET", "/account")["id"]
+        around = cup.leaderboard(slug, limit=20, offset=max(0, lb["myRank"] - 10))["leaderboard"]
+        me = [e for e in around if e["profileId"] == my_id]
     row["volume"] = round(me[0]["volume"]) if me else ""
     top5 = cup.leaderboard(slug, limit=min(100, max(1, math.floor(n * 0.05))))["leaderboard"]   # turnover benchmark
     row["volume_top5_median"] = round(sorted(e["volume"] for e in top5)[len(top5) // 2]) if top5 else ""

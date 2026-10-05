@@ -1,11 +1,12 @@
 """
 Fair-value gap trading. Prices every contest contract against the real-money markets (Kalshi /
-Polymarket mid = fair value), buys when the contest is cheap, sells when it converges or a take-profit
-is reached. Sized with fractional Kelly under per-contract, per-race, near-certain and cash limits.
+Polymarket mid = fair value), buys when the contest is cheap (5+ points), sells when it converges, or
+earlier ("rotation") when the money would earn more in the arb. Sized with fractional Kelly under
+per-contract, per-race, near-certain and cash limits.
 Called once per cycle from main.py (was cup_bot.py).
 """
-import math, sys
-from datetime import datetime
+import math, re, sys
+from datetime import datetime, timezone
 
 from bot.common import fair_value, fetch_external, load_mapping, race_key, round_tick
 
@@ -13,10 +14,11 @@ from bot.common import fair_value, fetch_external, load_mapping, race_key, round
 # Default profile: steady edge capture, aiming for a top 5-10% finish with low variance.
 # Bet size = kelly x Kelly fraction of equity, then clipped by max_frac and max_race.
 SAFE = dict(
-    entry_edge=0.03,      # buy only if contest price is >= 3 points better than fair value
+    entry_edge=0.05,      # buy only if contest price is >= 5 points better than fair value: only the big
+                          # edges; smaller ones are left so the cash goes to the arb (~2.5%/day, low risk)
     exit_band=0.01,       # sell when the gap has shrunk to within 1 point of fair value
-    take_profit=0.02,     # ...or as soon as it can be sold 2 points above what we paid: many gaps
-                          # never close before the election, and realized profit + freed cash beat waiting
+    take_profit=None,     # e.g. 0.02 = also sell once 2 pts above cost. Off: gap trades are held for the
+                          # full convergence (or settlement); the arb supplies the volume
     kelly=0.25,           # quarter-Kelly: fair values are estimates; halves the swings, keeps most growth
     max_frac=0.10,        # never hold more than 10% of starting balance in one contract
     max_race=0.08,        # ...or 8% in one race (e.g. Dem YES + Rep NO on the same race)
@@ -24,11 +26,20 @@ SAFE = dict(
     sure_edge=0.05,       # converge before settlement (favorite-longshot bias), so they need a 5-pt edge
     max_sure=0.20,        # and at most 20% of starting balance in them in total
     max_spend=0.30,       # never spend more than 30% of cash in a single run
-    min_cash=0.15,        # stop buying once cash is below 15% of starting balance (keeps room for
-                          # arbs and new edges; sells still happen). The arb step may use this reserve.
+    min_cash=0.02,        # stop buying once cash is below 2% of starting balance (sells still happen).
+                          # The gap step runs before the arb each cycle, so it gets first claim on cash.
     hold_edge=None,       # always exit once the gap closes, freeing cash for the next edge
     longshot=False,
     max_positions=None,
+    # Rotation: sell a gap position early when its money earns more in the arb. Only ever at or above
+    # what we paid, only while arbs are waiting for cash, at most one per cycle, and:
+    rotate=True,
+    rotate_haircut=0.5,       # holding must earn less per day than HALF the arb's measured daily return
+                              # (extra money goes to the arb's thinner pairs, so it earns less than average)
+    rotate_min_arb=0.005,     # and the arb must have measured >= 0.5%/day: if arbs slow down, no rotation
+    rotate_min_days_left=7,   # never in the final week: near-certain positions are about to pay out
+    rotate_min_age=7,         # competitive positions: only after 7 days held (time to converge), and only
+                              # if we wouldn't buy them today (edge at the ask below entry_edge)
 )
 # --aggressive: fewer, bigger, held-to-settlement bets. Built for top-3-or-nothing payouts.
 AGGRESSIVE = dict(
@@ -46,6 +57,7 @@ AGGRESSIVE = dict(
     hold_edge=0.10,       # if bought >= 10 points below fair, hold to settlement instead of exiting
     longshot=True,        # also buy cheap contracts (<= 0.25) where fair is >= 1.5x the price
     max_positions=10,     # concentrate: at most 10 open mapped positions
+    rotate=False,
 )
 LONGSHOT_MAX_PRICE = 0.25
 LONGSHOT_MIN_RATIO = 1.5
@@ -63,16 +75,52 @@ def wants_entry(price, fair, cfg, sure=False):
             and fair / price >= LONGSHOT_MIN_RATIO and fair - price >= LONGSHOT_MIN_EDGE)
 
 
+def _parse_ts(s):
+    """'2026-10-04T19:11:18.7351446+00:00' -> aware datetime (fromisoformat wants <= 6 fraction digits)."""
+    return datetime.fromisoformat(re.sub(r"(\.\d{6})\d+", r"\1", s.replace("Z", "+00:00")))
+
+
+def held_days(position):
+    """How long we've held a position: quantity-weighted age of its open lots, in days."""
+    lots = position.get("lots") or []
+    total = sum(l["quantity"] for l in lots)
+    if not total:
+        return None
+    now = datetime.now(timezone.utc)
+    return sum(l["quantity"] * (now - _parse_ts(l["openedAt"])).total_seconds() for l in lots) / total / 86400
+
+
+def rotation_reason(cfg, arb_info, position, held, paid, sell_px, buy_px, side_fair, sure, days_left):
+    """Why this gap position should be sold to move its money into the arb, or None to keep it."""
+    if not (cfg.get("rotate") and arb_info and held) or days_left <= cfg["rotate_min_days_left"]:
+        return None
+    if sell_px is None or sell_px < paid or arb_info["unfunded"] <= 0 or arb_info["rate"] < cfg["rotate_min_arb"]:
+        return None                                # never at a loss; only when arbs are waiting for cash
+                                                   # and actually earning well
+    hold_daily = (side_fair - sell_px) / sell_px / days_left    # what staying earns per day (to settlement)
+    arb_daily = arb_info["rate"] * cfg["rotate_haircut"]
+    if hold_daily >= arb_daily:
+        return None
+    if not sure:
+        age = held_days(position)
+        if age is None or age < cfg["rotate_min_age"]:
+            return None                            # still has time to converge
+        if buy_px is not None and side_fair - buy_px >= cfg["entry_edge"]:
+            return None                            # we'd buy it today: still a top gap trade
+    return f"holding earns {hold_daily:.2%}/day < arb {arb_daily:.2%}/day"
+
+
 def kelly_fraction(price, fair):
     """Share of bankroll that maximises long-run growth when buying a 0/1 contract at `price`
     that pays 1 with probability `fair`: (p - price) / (1 - price)."""
     return max(0.0, (fair - price) / (1 - price)) if price < 1 else 0.0
 
 
-def run(cup, t, live, cfg, max_orders=0, locked=None):
+def run(cup, t, live, cfg, max_orders=0, locked=None, arb_info=None):
     """One gap-trading pass. `locked` = {exchange_id: signed shares} owned by arb pairs (see arb.py):
     those shares are never sold here, and we never buy the opposite side of a locked contract
-    (that would net against the pair instead of opening a position)."""
+    (that would net against the pair instead of opening a position). `arb_info` = the arb's measured
+    return and unfunded demand (arb.rotation_info()), for the rotation rule; None disables rotation."""
     locked = locked or {}
     slug, tid = t["slug"], t["id"]
     t = cup.tournament(slug)                       # refresh balance
@@ -92,6 +140,9 @@ def run(cup, t, live, cfg, max_orders=0, locked=None):
     actions, candidates = [], []
     sold_cost = {}                                 # exchange_id -> cost of the gap shares we're selling
     sure_cost = 0.0                                # gap money in near-certain contracts
+    days_left = ((_parse_ts(t["endDate"]) - datetime.now(timezone.utc)).total_seconds() / 86400
+                 if t.get("endDate") else 0)       # unknown end date -> 0 -> no rotation
+    rotated = False                                # at most one rotation per cycle
 
     print(f"\n{datetime.now():%H:%M:%S}  cash {cash:,.0f}  equity {equity:,.0f} {t['currencyName']}"
           f"  |  {len(mapping)} mapped contracts")
@@ -123,6 +174,9 @@ def run(cup, t, live, cfg, max_orders=0, locked=None):
         no_bid = 1 - ask if ask is not None else None  # what we can sell NO for
         no_ask = 1 - bid if bid is not None else None  # what we pay for NO
         signal = ""
+        rotate_why = None if rotated or not held else rotation_reason(
+            cfg, arb_info, p, held, paid, bid if held > 0 else no_bid, ask if held > 0 else no_ask,
+            fair if held > 0 else 1 - fair, sure, days_left)
 
         # exits first: has the gap closed (or flipped)?
         tp = cfg["take_profit"]
@@ -146,6 +200,16 @@ def run(cup, t, live, cfg, max_orders=0, locked=None):
                 sold_cost[ex_id] = held_cost
                 if sure:
                     sure_cost -= held_cost
+
+        # rotation: its money earns more in the arb (only at or above cost; see rotation_reason)
+        elif rotate_why:
+            side, qty, px = ("yes", held, bid) if held > 0 else ("no", -held, no_bid)
+            signal = f"ROTATE: SELL {qty} {side.upper()} @ {px:.3f} ({rotate_why})"
+            actions.append((ex_id, side, "sell", qty, px))
+            sold_cost[ex_id] = held_cost
+            if sure:
+                sure_cost -= held_cost
+            rotated = True
 
         # entries: contest cheaper than fair value -- sized after the loop, best first
         elif held >= 0 and lock >= 0 and wants_entry(ask, fair, cfg, sure):

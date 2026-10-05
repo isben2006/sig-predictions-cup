@@ -18,17 +18,26 @@ Goal: a top 5–10% finish with low variance, rather than a lottery-style shot a
 ### Fair-value gap trading
 - **Fair value** = average of the Kalshi and Polymarket mid prices. A contract is skipped if the
   two sources disagree by more than 8 points.
-- **Entry**: buy YES when the contest ask is at least 3 points below fair value, or NO when the
-  bid is at least 3 points above it.
+- **Entry**: buy YES when the contest ask is at least 5 points below fair value, or NO when the
+  bid is at least 5 points above it. Only big edges: smaller ones are left so the cash goes to the
+  arb, which earned ~2.5% a day on its capital at low risk.
 - **Exit**: sell once the contest price is within 1 point of fair value, which frees the cash for
   the next mispricing.
-- **Sizing**: half-Kelly, `f* = (p − price) / (1 − price)`, so bigger edges get bigger bets.
-  Capped at 10% of bankroll per contract and 15% per race (both parties combined).
-- **Cash reserve**: no new buys once cash falls below 15% of the starting balance.
+- **Sizing**: quarter-Kelly, `f* = (p − price) / (1 − price)`, so bigger edges get bigger bets.
+  Capped at 10% of bankroll per contract and 8% per race (both parties combined).
+- **Near-certain contracts** (favorite ≥ 90%) rarely converge before settlement (the
+  favorite-longshot bias), so they are capped at 20% of bankroll in total.
+- **Holding**: positions are held for the full convergence; the ones that never converge are
+  held to settlement. The gap step runs first each cycle, so these big edges get first claim on cash.
+- **Rotation**: a position is sold early when its money would earn more in the arb: only at or
+  above cost, only while arbs are waiting for cash, only if holding earns less per day than half
+  the arb's *measured* daily return (and the arb measures ≥ 0.5%/day), never in the final week, at
+  most one per cycle. Competitive positions additionally need 7+ days held and an edge below the
+  entry threshold (i.e. we wouldn't buy them today).
 
 ### D + R arbitrage
 - **NO + NO**: if `bid(D) + bid(R) > 1`, buy NO on both. One of them always pays 1, and a
-  third-party win pays 2.
+  third-party win pays 2, so these are traded in every race, independents or not.
 - **YES + YES**: if `ask(D) + ask(R) < 1`, buy YES on both. This pays 1 only if D or R wins, so it
   is only done where Kalshi prices all other candidates at ≤ 2%, *and* at ≤ half the locked
   profit. In practice the "best" YES+YES arbs (SD and ID Senate, 5 points) turned out to be
@@ -39,6 +48,8 @@ Goal: a top 5–10% finish with low variance, rather than a lottery-style shot a
   immediately, and uneven fills are repaired next cycle (completing the pair at ≤ break-even).
 - **Early exit**: a pair is sold early when that keeps ≥ 50% of its settlement profit, so the
   cash can be reused.
+- **Capital**: the arb is the volume engine. It may use up to 75% of the bankroll; the gap step
+  still gets first claim on cash each cycle, and 2% stays free for repairing one-sided fills.
 
 ### Running both on the same races
 The account only shows one net position per contract, so the strategies are coordinated
@@ -83,7 +94,7 @@ data/                      mapping.csv, stats.csv, arb_races.json (live arb ledg
 logs/                      bot.log (not in git)
 ```
 
-Each cycle `main.py trade --arb` runs the arb step, then the gap step, then (hourly) the stats snapshot
+Each cycle `main.py trade --arb` runs the gap step, then the arb step, then (hourly) the stats snapshot
 and notifications. Paths are anchored to the project folder, so the bot runs from any directory; tests
 point `SIG_DATA_DIR` / `SIG_LOG_DIR` at a scratch folder so they can't touch the live ledger.
 
