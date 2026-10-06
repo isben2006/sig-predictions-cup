@@ -90,6 +90,9 @@ bot/
   strategies/
     gap.py                 fair-value gap trading (entry/exit rules, Kelly sizing, risk limits)
     arb.py                 D + R arbitrage (pair logic, share ledger, repair, early exit)
+deploy/
+  deploy.sh                set up, update and monitor the server from the laptop
+  sig-bot.service          systemd unit for the trading loop
 data/                      mapping.csv, stats.csv, arb_races.json (live arb ledger, not in git)
 logs/                      bot.log (not in git)
 ```
@@ -101,7 +104,7 @@ point `SIG_DATA_DIR` / `SIG_LOG_DIR` at a scratch folder so they can't touch the
 ## Usage
 
 ```bash
-pip install requests
+pip install -r requirements.txt
 echo "SIG_API_KEY=your_key" > .env            # contest API key (read + trade)
 echo "NTFY_TOPIC=some-private-name" >> .env    # optional: phone notifications via the ntfy app
 
@@ -113,6 +116,26 @@ python3 main.py stats                       # append a snapshot to data/stats.cs
 python3 main.py positions | leaderboard
 
 pkill -f "main.py trade"                    # graceful stop
+```
+
+## Deployment
+The bot runs 24/7 on a DigitalOcean droplet (Ubuntu 24.04, 1 vCPU / 2 GB) in **San Francisco
+(SFO3)**. The contest API is served from Vercel's `sfo1` region (its `x-vercel-id` header), so a
+West Coast server skips a cross-country hop on every request: ~170 ms per call from SFO3 vs
+~255 ms from Boston and ~330 ms from Europe. That matters little for a one-minute loop but more
+for market making, where stale quotes get picked off.
+
+It runs as a systemd service (`deploy/sig-bot.service`) that starts on boot and restarts on a
+crash. Stopping sends `SIGTERM`, which finishes the current cycle first. The server's `data/` is
+the live copy, so code deploys never send local state.
+
+```bash
+echo "SIG_SERVER=bot@<ip>" >> .env      # server address (SSH key: ~/.ssh/sig-bot)
+deploy/deploy.sh setup                  # first time: user, firewall, Python, code + data, service
+deploy/deploy.sh start                  # after stopping the bot on the laptop
+deploy/deploy.sh push                   # deploy code changes (restarts only if code changed)
+deploy/deploy.sh pull                   # bring the server's data/ and logs/ back for analysis
+deploy/deploy.sh logs | status | stop | restart
 ```
 
 ## Results

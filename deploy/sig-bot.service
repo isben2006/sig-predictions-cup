@@ -1,0 +1,18 @@
+# systemd unit for the trading loop. Installed by `deploy/deploy.sh setup` to
+# /etc/systemd/system/sig-bot.service. SIGTERM finishes the current cycle before exiting.
+[Unit]
+Description=SIG Predictions Cup bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=bot
+WorkingDirectory=/home/bot/sig-predictions-cup
+ExecStart=/home/bot/sig-predictions-cup/.venv/bin/python -u main.py trade --arb --loop 60 --yes --tournament midterm-elections
+Restart=always
+RestartSec=30
+KillSignal=SIGTERM
+TimeoutStopSec=300
+
+[Install]
+WantedBy=multi-user.target

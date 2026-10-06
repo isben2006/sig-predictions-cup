@@ -21,6 +21,7 @@ Running unattended (24/7), both strategies in one loop on every mapped race
   caffeinate -i nohup python3 main.py trade --arb --loop 60 --yes > /dev/null 2>&1 &
   tail -f logs/bot.log          # watch it; errors are logged and the loop keeps going
   pkill -f "main.py trade"   # stop it: finishes the current cycle, then exits (safe any time)
+  on a server it runs as a systemd service instead: see deploy/deploy.sh
 
 Setup
   pip install requests
@@ -86,7 +87,7 @@ def main():
     last_stats, failures, summary_day = 0.0, 0, None
     if live and a.loop:
         notify("Trading bot started", "The bot is running. You'll get a summary every day at "
-               f"{SUMMARY_HOUR}:00. If a summary doesn't arrive, the bot has stopped (or the Mac is asleep): "
+               f"{SUMMARY_HOUR}:00. If a summary doesn't arrive, the bot has stopped (or its machine is down): "
                f"restart it by pasting this in Terminal: {RESTART_CMD}", priority="low", tags="white_check_mark")
     while not stop:
         if a.loop and time.time() - last_stats >= 3600:   # hourly snapshot while looping

@@ -11,8 +11,9 @@ from bot.common import DATA_DIR, LOG_DIR, fair_value, fetch_external, load_mappi
 
 NTFY_TOPIC = os.environ.get("NTFY_TOPIC", "")     # phone notifications via ntfy.sh (optional)
 SUMMARY_HOUR = 9                                   # local hour for the daily summary
-RESTART_CMD = ("cd ~/Desktop/resume_projects/sig-predictions-cup && caffeinate -i nohup python3 main.py "
-               "trade --arb --loop 60 --yes --tournament midterm-elections > /dev/null 2>&1 &")
+RESTART_CMD = os.environ.get("SIG_RESTART_CMD") or (   # shown in start/stop notifications; set in .env on a server
+    "cd ~/Desktop/resume_projects/sig-predictions-cup && caffeinate -i nohup python3 main.py "
+    "trade --arb --loop 60 --yes --tournament midterm-elections > /dev/null 2>&1 &")
 LOG_FILE = os.path.join(LOG_DIR, "bot.log")
 STATS_FILE = os.path.join(DATA_DIR, "stats.csv")   # hourly leaderboard / equity snapshots (for pacing and Sharpe / drawdown)
 STATS_COLUMNS = ["time_utc", "rank", "ranked", "pnl", "equity", "cash", "holdings",
