@@ -1,6 +1,6 @@
 """
 Reporting: positions / leaderboard printouts, the hourly stats.csv snapshot (rank, cutoffs, P&L three
-ways, volume), and plain-language phone notifications (ntfy.sh) incl. the daily summary.
+ways, volume, SIG Smart Score), and plain-language phone notifications (ntfy.sh) incl. the daily summary.
 """
 import csv, math, os
 from datetime import datetime, timedelta, timezone
@@ -18,7 +18,7 @@ LOG_FILE = os.path.join(LOG_DIR, "bot.log")
 STATS_FILE = os.path.join(DATA_DIR, "stats.csv")   # hourly leaderboard / equity snapshots (for pacing and Sharpe / drawdown)
 STATS_COLUMNS = ["time_utc", "rank", "ranked", "pnl", "equity", "cash", "holdings",
                  "cutoff_top5", "cutoff_top10", "leader_pnl", "sharpe_api", "pnl_sell_now", "pnl_fair",
-                 "volume", "volume_top5_median"]
+                 "volume", "volume_top5_median", "smart_score", "smart_rank", "smart_traders", "smart_elite"]
 
 
 
@@ -96,6 +96,8 @@ def log_stats(cup, t):
     row["volume"] = round(me[0]["volume"]) if me else ""
     top5 = cup.leaderboard(slug, limit=min(100, max(1, math.floor(n * 0.05))))["leaderboard"]   # turnover benchmark
     row["volume_top5_median"] = round(sorted(e["volume"] for e in top5)[len(top5) // 2]) if top5 else ""
+    row.update(smart_score(cup, slug))
+    _upgrade_stats_header()
     new_file = not os.path.exists(STATS_FILE)
     with open(STATS_FILE, "a", newline="") as f:
         w = csv.DictWriter(f, fieldnames=STATS_COLUMNS)
@@ -104,7 +106,42 @@ def log_stats(cup, t):
         w.writerow(row)
     print(f"\nSTATS  rank {row['rank']} of {n}  P&L {row['pnl']:+,.0f} (sell now {row['pnl_sell_now']:+,.0f}, "
           f"at fair value {row['pnl_fair']:+,.0f})  |  top 10% {row['cutoff_top10']:+,.0f}"
-          f"  top 5% {row['cutoff_top5']:+,.0f}  |  invested {row['holdings']:,.0f}, cash {row['cash']:,.0f}")
+          f"  top 5% {row['cutoff_top5']:+,.0f}  |  invested {row['holdings']:,.0f}, cash {row['cash']:,.0f}"
+          + (f"  |  smart score {row['smart_score']} (rank {row['smart_rank']} of {row['smart_traders']})"
+             if row["smart_score"] != "" else ""))
+
+
+def smart_score(cup, slug):
+    """SIG's Smart Score (PnL, ROI, win rate and volatility combined; elite = recruiting cut) for the
+    whole tournament. Blank until SIG has scored us, or if the endpoint fails: never blocks the snapshot."""
+    blank = {"smart_score": "", "smart_rank": "", "smart_traders": "", "smart_elite": ""}
+    try:
+        res = cup.req("GET", f"/tournaments/{slug}/me/smart-score")
+    except RuntimeError:
+        return blank
+    rows = res.get("data", []) if isinstance(res, dict) else res
+    g = next((r for r in rows if r.get("marketType") == "global"), None)
+    if not g:
+        return blank
+    return {"smart_score": round(g["smartScoreDecayed"], 1), "smart_rank": g.get("rank") or "",
+            "smart_traders": g.get("totalTraders") or "", "smart_elite": int(bool(g.get("isElite")))}
+
+
+def _upgrade_stats_header():
+    """Rewrite stats.csv under the current STATS_COLUMNS if it was started with fewer (old rows keep blanks)."""
+    if not os.path.exists(STATS_FILE):
+        return
+    with open(STATS_FILE, newline="") as f:
+        reader = csv.DictReader(f)
+        if reader.fieldnames == STATS_COLUMNS:
+            return
+        rows = list(reader)
+    tmp = STATS_FILE + ".tmp"
+    with open(tmp, "w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=STATS_COLUMNS, extrasaction="ignore")
+        w.writeheader()
+        w.writerows(rows)
+    os.replace(tmp, STATS_FILE)
 
 
 # ---------------------------------------------------------------- notifications
@@ -175,6 +212,9 @@ def daily_summary():
     msg.append(f"{sells} positions sold, {pair_sales} arbitrage pairs sold.")
     if num(now, "pnl_fair") is not None:
         msg.append(f"Value at Kalshi/Polymarket prices: {num(now, 'pnl_fair'):+,.0f}.")
+    if num(now, "smart_score") is not None:
+        msg.append(f"SIG Smart Score {num(now, 'smart_score'):.1f} (rank {now['smart_rank']} of "
+                   f"{now['smart_traders']}; elite needs 80).")
 
     unusual = []
     f_now, f_then = num(now, "pnl_fair"), num(then, "pnl_fair")

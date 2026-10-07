@@ -6,7 +6,8 @@ In a race exactly one of Democrat / Republican wins (barring a third party), so 
   NO(D)  + NO(R)  always pays >= 1 -> buy both when their bids sum to > 1  (a 3rd-party win pays 2)
 The profit is locked in when a pair is bought. A pair is sold early (both legs together) when selling
 it now keeps at least half of that profit, which frees the cash for the next arb; otherwise it's held
-to settlement.
+to settlement. A pair is also swapped (sold, and a waiting pair in another race bought) when it sells
+for more than the waiting pair costs: same payout at settlement, the difference in cash now.
 
 YES+YES pairs are only bought where Kalshi gives candidates other than D and R <= 2% combined
 (max_third_party), and never where Kalshi has no such data. NO+NO pairs need no such filter.
@@ -38,6 +39,10 @@ ARB = dict(
                           # fills (repairs aren't budget-limited). Raise it before election night.
     max_cash=0.50,        # never use more than 50% of current cash in one run
     unwind_keep=0.5,      # sell a pair early if that keeps >= 50% of its settlement profit
+    swap="shadow",        # swap a held pair into a cheaper waiting one (step 4 of run): "shadow" = only log
+                          # what it would do, "live" = trade it, None = off
+    swap_margin=0.005,    # a swap must gain >= half a point per pair: covers leg risk (it's 4 fills)
+    swap_candidates=3,    # waiting pairs checked per run (2 order-book reads each)
 )
 STATE_FILE = os.path.join(DATA_DIR, "arb_races.json")   # race -> {"side": "yes"|"no", "legs": {exchange_id: signed shares we own},
                                 #          "unwind": {party: min sell price}} (only while a sale is part-done)
@@ -223,6 +228,7 @@ def run(cup, t, live, cfg, max_pairs=0, shared=False):
         return sum(abs(pos[e]["costBasis"]) for e in races[race].values() if e in pos)
 
     stats, unfunded, in_arbs = load_stats(), 0, 0.0
+    held_bids, waiting = {}, []                      # for step 4: held pairs' sell ladders, unfunded opps
     try:                                             # save the ledger even if the pass fails midway
         in_arbs = sum(leg_cost(r, e) for r, st in state.items() for e in st["legs"])
         budget = min(cash * cfg["max_cash"], start * cfg["max_total"] - in_arbs, cash - start * cfg["keep_cash"])
@@ -275,9 +281,10 @@ def run(cup, t, live, cfg, max_pairs=0, shared=False):
                 continue
             paid = (leg_cost(race, d) + leg_cost(race, r)) / q                  # cost per pair
             target = paid + max(cfg["unwind_keep"] * (1 - paid), TICK)         # sell only at or above this
-            n, lim_d, lim_r, got = pair_depth(bid_ladder(cup.orderbook(tid, d), side),
-                                              bid_ladder(cup.orderbook(tid, r), side), target, selling=True)
+            bids = bid_ladder(cup.orderbook(tid, d), side), bid_ladder(cup.orderbook(tid, r), side)
+            n, lim_d, lim_r, got = pair_depth(*bids, target, selling=True)
             if n <= 0:
+                held_bids[race] = (side, q, paid, bids)  # not sold here: step 4 may swap it
                 continue
             avg, n = got / n, min(n, q)                  # avg over the walked depth (an upper-bound estimate)
             print(f"  {race:28s} SELL {n} {side.upper()} pairs: D @>= {lim_d:.3f}, R @>= {lim_r:.3f}  "
@@ -332,6 +339,7 @@ def run(cup, t, live, cfg, max_pairs=0, shared=False):
             if budget <= 0:
                 print("  arb budget used up")
                 unfunded += len(opps) - i                # waiting for money (gap.py may rotate cash here)
+                waiting += opps[i:]
                 break
             # third parties only threaten YES+YES (both legs lose); a third-party win pays NO+NO twice
             third = third_party_chance(race) if side == "yes" else None
@@ -357,6 +365,8 @@ def run(cup, t, live, cfg, max_pairs=0, shared=False):
                 print(f"  {race:28s} {side.upper()}+{side.upper()} {profit:+.3f}: "
                       + ("at race cap" if race_room < budget else "no arb budget left this run"))
                 unfunded += race_room >= budget
+                if race_room >= budget:
+                    waiting.append((profit, race, side))
                 continue
             print(f"  {race:28s} BUY {qty} {side.upper()} on D @<= {lim_d:.3f} and R @<= {lim_r:.3f}  "
                   f"(pair ~{avg:.3f}: locks {1 - avg:+.3f}/pair, {qty * (1 - avg):+,.0f} total)")
@@ -375,6 +385,85 @@ def run(cup, t, live, cfg, max_pairs=0, shared=False):
                 print(f"    filled D {fd} / R {fr}" + ("" if fd == fr else "  (uneven: repaired next run)"))
             except Exception as e:
                 print(f"  ! arb order failed on {race}: {e}")
+
+        # 4. swaps: sell a held pair when the market pays more for it than a waiting pair (any race) costs.
+        #    Both pay 1 at settlement (+ the third-party chance for NO+NO, - it for YES+YES), so we keep
+        #    the same payout and pocket the difference now. Only at or above what we paid for the held pair,
+        #    and only for >= swap_margin per pair (a swap is 4 fills: leg risk). Live: one swap per run.
+        if cfg.get("swap") and waiting and held_bids:
+            execute = live and cfg["swap"] == "live"
+            tag = "SWAP" if execute else "SWAP (shadow, not traded)"
+            payout = lambda race, side: 1 + (third_party_chance(race) or 0) * (1 if side == "no" else -1)
+            new = []                                     # fundable waiting pairs, priced from their books
+            for _, race, side in sorted(waiting, reverse=True):
+                if len(new) >= cfg["swap_candidates"]:
+                    break
+                room = start * cfg["max_race"] - race_cost(race)
+                third = third_party_chance(race) if side == "yes" else None
+                if room <= 0 or (side == "yes" and (third is None or third > cfg["max_third_party"])):
+                    continue
+                d, r = races[race]["Democratic"], races[race]["Republican"]
+                asks = ask_ladder(cup.orderbook(tid, d), side), ask_ladder(cup.orderbook(tid, r), side)
+                if not (asks[0] and asks[1]):
+                    continue
+                cost = asks[0][0][0] + asks[1][0][0]     # best level only: price the swap conservatively
+                if 1 - cost < cfg["min_profit"] - 1e-9 or (side == "yes" and third > cfg["yes_third_frac"] * (1 - cost)):
+                    continue
+                qty, lim_d, lim_r, _ = pair_depth(*asks, cost)
+                qty = min(qty, math.floor(room / cost))
+                if qty > 0:
+                    new.append({"race": race, "side": side, "cost": cost, "qty": qty, "lim": (lim_d, lim_r),
+                                "value": payout(race, side) - cost})     # expected profit per pair bought
+            new.sort(key=lambda x: x["value"], reverse=True)
+            for race, (side, q, paid, bids) in held_bids.items():
+                hold_value = payout(race, side)
+                nw = next((x for x in new if x["race"] != race and x["qty"] > 0), None)
+                if not nw:
+                    break
+                # swap pays if sell - cost > hold_value - new payout + margin, i.e. sell > hold_value - value + margin
+                floor = max(paid, hold_value - nw["value"] + cfg["swap_margin"])
+                walked, sd, sr, got = pair_depth(*bids, floor, selling=True)
+                if walked <= 0:
+                    continue
+                n, avg = min(walked, q, nw["qty"]), got / walked
+                gain = avg - (hold_value - nw["value"])  # per pair, vs holding
+                ns = nw["side"].upper()
+                print(f"  {tag}: sell {n} {side.upper()} pairs of {race} @ ~{avg:.3f} (paid {paid:.3f}) -> buy "
+                      f"{ns}+{ns} {nw['race']} @ {nw['cost']:.3f}: {gain:+.3f}/pair, {n * gain:+,.0f} vs holding")
+                nw["qty"] -= n
+                if not execute:
+                    continue
+                d, r = races[race]["Democratic"], races[race]["Republican"]
+                st = state[race]
+                try:
+                    st["unwind"] = {"Democratic": sd, "Republican": sr}       # lets step 1 finish a part-fill
+                    res = cup.multi_leg(tid, [(d, side, "sell", n, sd), (r, side, "sell", n, sr)])
+                    fd, fr = (cancel_rest(cup, o) for o in res)
+                    book(race, d, side, fd, "sell")
+                    book(race, r, side, fr, "sell")
+                    print(f"    sold D {fd} / R {fr}" + ("" if fd == fr else "  (uneven: leftover leg sold next run)"))
+                    if fd == fr:
+                        st.pop("unwind")
+                except Exception as e:
+                    st.pop("unwind", None)
+                    print(f"  ! swap sale failed on {race}: {e}")
+                    break
+                m, nr = min(fd, fr), nw["race"]
+                if m:
+                    nd_, nr_ = races[nr]["Democratic"], races[nr]["Republican"]
+                    try:
+                        res = cup.multi_leg(tid, [(nd_, nw["side"], "buy", m, nw["lim"][0]),
+                                                  (nr_, nw["side"], "buy", m, nw["lim"][1])])
+                        bd, br = (cancel_rest(cup, o) for o in res)
+                        if bd or br:
+                            state.setdefault(nr, {"side": nw["side"], "legs": {nd_: 0, nr_: 0}})
+                            book(nr, nd_, nw["side"], bd, "buy")
+                            book(nr, nr_, nw["side"], br, "buy")
+                            stats["fills"].append([time.time(), min(bd, br) * max(gain, 0)])   # the swap's extra profit
+                        print(f"    bought D {bd} / R {br}" + ("" if bd == br else "  (uneven: repaired next run)"))
+                    except Exception as e:
+                        print(f"  ! swap buy failed on {nr}: {e} (the sale stands; cash goes to the next arb)")
+                break                                    # live: one swap per run
 
         if not live and opps:
             print("\nDry run: no orders placed. Use `trade` to execute.")
