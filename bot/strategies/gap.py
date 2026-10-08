@@ -129,11 +129,12 @@ def kelly_fraction(price, fair):
     return max(0.0, (fair - price) / (1 - price)) if price < 1 else 0.0
 
 
-def run(cup, t, live, cfg, max_orders=0, locked=None, arb_info=None):
+def run(cup, t, live, cfg, max_orders=0, locked=None, arb_info=None, reserved=0.0):
     """One gap-trading pass. `locked` = {exchange_id: signed shares} owned by arb pairs (see arb.py):
     those shares are never sold here, and we never buy the opposite side of a locked contract
     (that would net against the pair instead of opening a position). `arb_info` = the arb's measured
-    return and unfunded demand (arb.rotation_info()), for the rotation rule; None disables rotation."""
+    return and unfunded demand (arb.rotation_info()), for the rotation rule; None disables rotation.
+    `reserved` = cash the arb freed and keeps for itself (arb.reserved_cash()): never spent here."""
     locked = locked or {}
     slug, tid = t["slug"], t["id"]
     t = cup.tournament(slug)                       # refresh balance
@@ -147,7 +148,7 @@ def run(cup, t, live, cfg, max_orders=0, locked=None, arb_info=None):
     equity = cash + portfolio["summary"]["totalMarketValue"]     # Kelly bankroll
     quotes = cup.prices(tid, mapping.keys())
     ext = fetch_external(mapping.values())
-    budget_run = max(0.0, min(cash * cfg["max_spend"], cash - start * cfg["min_cash"]))
+    budget_run = max(0.0, min(cash * cfg["max_spend"], cash - start * cfg["min_cash"] - reserved))
     cap = start * cfg["max_frac"]
     race_cap = start * cfg["max_race"]
     actions, candidates = [], []
@@ -252,7 +253,8 @@ def run(cup, t, live, cfg, max_orders=0, locked=None, arb_info=None):
             race = race_key(p["marketTitle"])
             race_cost[race] = race_cost.get(race, 0) + abs(p["costBasis"]) - sold_cost.get(k, 0)
         print(f"\nEntries (best expected return first; buying budget {budget_run:,.0f} after the "
-              f"{cfg['min_cash']:.0%} cash reserve):")
+              f"{cfg['min_cash']:.0%} cash reserve" + (f" and {reserved:,.0f} kept for the arb" if reserved >= 1 else "")
+              + "):")
         for ret, ex_id, side, price, fair_side, held_cost, already_held, name, sure in sorted(candidates, reverse=True):
             if cfg["max_positions"] and not already_held and open_count >= cfg["max_positions"]:
                 print(f"  {name:52s} skip (already at {cfg['max_positions']} positions)")

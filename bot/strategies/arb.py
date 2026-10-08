@@ -39,10 +39,11 @@ ARB = dict(
                           # fills (repairs aren't budget-limited). Raise it before election night.
     max_cash=0.50,        # never use more than 50% of current cash in one run
     unwind_keep=0.5,      # sell a pair early if that keeps >= 50% of its settlement profit
-    swap="shadow",        # swap a held pair into a cheaper waiting one (step 4 of run): "shadow" = only log
+    swap="live",        # swap a held pair into a cheaper waiting one (step 4 of run): "shadow" = only log
                           # what it would do, "live" = trade it, None = off
     swap_margin=0.005,    # a swap must gain >= half a point per pair: covers leg risk (it's 4 fills)
     swap_candidates=3,    # waiting pairs checked per run (2 order-book reads each)
+    swap_min_gain=1.0,    # skip swaps worth less than this in total: 4 orders of API budget and leg risk
 )
 STATE_FILE = os.path.join(DATA_DIR, "arb_races.json")   # race -> {"side": "yes"|"no", "legs": {exchange_id: signed shares we own},
                                 #          "unwind": {party: min sell price}} (only while a sale is part-done)
@@ -105,6 +106,21 @@ def load_stats():
 def save_stats(stats):
     with open(STATS_FILE, "w") as f:
         json.dump(stats, f)
+
+
+def reserved_cash():
+    """Cash the arb freed (early sales, swaps, finishing a sale, plus gap rotation sales) and hasn't
+    reinvested yet. gap.py leaves it alone so the arb gets its own money back (only while arbs are
+    waiting for cash, within max_total)."""
+    return load_stats().get("reserved", 0.0)
+
+
+def add_reserved(amount):
+    """Keep `amount` more cash for the arb: gap.py's rotation sales, whose whole point is funding the arb."""
+    if amount > 0:
+        s = load_stats()
+        s["reserved"] = round(s.get("reserved", 0.0) + amount, 2)
+        save_stats(s)
 
 
 def rotation_info(window_h=48, min_history_h=12, max_age_s=900):
@@ -170,7 +186,9 @@ def cancel_rest(cup, order):
             filled = int(cup.order_fills(order["orderId"])["totalQuantityFilled"])
         except Exception as e:
             print(f"    ! couldn't re-read fills of {order['orderId']} ({e}); using {filled}")
-    return filled
+    # a sell retried after a 503 once came back as -165: count shares, never more than were ordered
+    filled = abs(filled)
+    return min(filled, int(order["quantity"])) if order.get("quantity") else filled
 
 
 def locked_shares():
@@ -217,10 +235,12 @@ def run(cup, t, live, cfg, max_pairs=0, shared=False):
         q = held(race, ex)
         return abs(pos[ex]["costBasis"]) * q / abs(pos[ex]["quantity"]) if q and ex in pos else 0
 
-    def book(race, ex, side, filled, action):     # record a fill in the ledger
+    def book(race, ex, side, filled, action, price):  # record a fill in the ledger, and the cash it moved
+        nonlocal reserved
         sign = 1 if side == "yes" else -1
         legs = state[race]["legs"]
         legs[ex] = legs.get(ex, 0) + (sign if action == "buy" else -sign) * filled
+        reserved = max(0.0, reserved + (filled if action == "sell" else -filled) * price)   # see reserved_cash()
         if live:
             save_state(state)                        # on disk at once, so the ledger is never stale
 
@@ -229,11 +249,15 @@ def run(cup, t, live, cfg, max_pairs=0, shared=False):
 
     stats, unfunded, in_arbs = load_stats(), 0, 0.0
     held_bids, waiting = {}, []                      # for step 4: held pairs' sell ladders, unfunded opps
+    reserved = 0.0                                   # cash the arb freed and keeps for itself (book() updates it)
     try:                                             # save the ledger even if the pass fails midway
         in_arbs = sum(leg_cost(r, e) for r, st in state.items() for e in st["legs"])
-        budget = min(cash * cfg["max_cash"], start * cfg["max_total"] - in_arbs, cash - start * cfg["keep_cash"])
+        room = start * cfg["max_total"] - in_arbs        # what the 75% cap still allows
+        reserved = max(0.0, min(stats.get("reserved", 0.0), cash - start * cfg["keep_cash"], room))
+        budget = min(cash * cfg["max_cash"], room, cash - start * cfg["keep_cash"])
         print(f"\n{time.strftime('%H:%M:%S')}  ARB  cash {cash:,.0f} {t['currencyName']}  |  "
-              f"{in_arbs:,.0f} in {len(state)} pair(s)  |  budget this run {max(budget, 0):,.0f}")
+              f"{in_arbs:,.0f} in {len(state)} pair(s)  |  budget this run {max(budget, 0):,.0f}"
+              + (f" ({reserved:,.0f} freed by the arb, kept for it)" if reserved >= 1 else ""))
 
         # 1. repair legs that filled unevenly (on a buy, or on an early sale)
         for race, st in list(state.items()):
@@ -255,7 +279,7 @@ def run(cup, t, live, cfg, max_pairs=0, shared=False):
                     print(f"  {race:28s} FINISH SALE: sell {int(n)} {side.upper()} on the leftover leg @ {ladder[0][0]:.3f}")
                     if live:
                         f = cancel_rest(cup, cup.order(tid, big, side, "sell", int(n), ladder[0][0]))
-                        book(race, big, side, f, "sell")
+                        book(race, big, side, f, "sell", ladder[0][0])
                         print(f"    filled {f}")
                     continue
             # otherwise re-pair: buy the missing shares, as long as the pair still (about) breaks even
@@ -269,7 +293,7 @@ def run(cup, t, live, cfg, max_pairs=0, shared=False):
                   f"(pair {paid + ladder[0][0]:.3f})")
             if live:
                 f = cancel_rest(cup, cup.order(tid, small, side, "buy", int(n), ladder[0][0]))
-                book(race, small, side, f, "buy")
+                book(race, small, side, f, "buy", ladder[0][0])
                 print(f"    filled {f}")
 
         # 2. sell pairs early when that keeps >= unwind_keep of the settlement profit, freeing the cash
@@ -296,8 +320,8 @@ def run(cup, t, live, cfg, max_pairs=0, shared=False):
                 st["unwind"] = {"Democratic": lim_d, "Republican": lim_r}       # lets step 1 finish a part-fill
                 res = cup.multi_leg(tid, [(d, side, "sell", n, lim_d), (r, side, "sell", n, lim_r)])
                 fd, fr = (cancel_rest(cup, o) for o in res)
-                book(race, d, side, fd, "sell")
-                book(race, r, side, fr, "sell")
+                book(race, d, side, fd, "sell", lim_d)
+                book(race, r, side, fr, "sell", lim_r)
                 print(f"    sold D {fd} / R {fr}" + ("" if fd == fr else "  (uneven: leftover leg sold next run)"))
                 if fd == fr:
                     st.pop("unwind")
@@ -379,8 +403,8 @@ def run(cup, t, live, cfg, max_pairs=0, shared=False):
                 fd, fr = (cancel_rest(cup, o) for o in res)
                 if fd or fr:
                     state.setdefault(race, {"side": side, "legs": {d: 0, r: 0}})
-                    book(race, d, side, fd, "buy")
-                    book(race, r, side, fr, "buy")
+                    book(race, d, side, fd, "buy", lim_d)
+                    book(race, r, side, fr, "buy", lim_r)
                     stats["fills"].append([time.time(), min(fd, fr) * (1 - avg)])   # profit locked in
                 print(f"    filled D {fd} / R {fr}" + ("" if fd == fr else "  (uneven: repaired next run)"))
             except Exception as e:
@@ -415,7 +439,11 @@ def run(cup, t, live, cfg, max_pairs=0, shared=False):
                     new.append({"race": race, "side": side, "cost": cost, "qty": qty, "lim": (lim_d, lim_r),
                                 "value": payout(race, side) - cost})     # expected profit per pair bought
             new.sort(key=lambda x: x["value"], reverse=True)
-            for race, (side, q, paid, bids) in held_bids.items():
+            # worst held pair first: the least left to earn by holding (top bid sum closest to its payout)
+            top = lambda race, bids: (bids[0][0][0] + bids[1][0][0] - payout(race, held_bids[race][0])
+                                      if bids[0] and bids[1] else -1)
+            for race, (side, q, paid, bids) in sorted(held_bids.items(), key=lambda kv: top(kv[0], kv[1][3]),
+                                                      reverse=True):
                 hold_value = payout(race, side)
                 nw = next((x for x in new if x["race"] != race and x["qty"] > 0), None)
                 if not nw:
@@ -423,10 +451,16 @@ def run(cup, t, live, cfg, max_pairs=0, shared=False):
                 # swap pays if sell - cost > hold_value - new payout + margin, i.e. sell > hold_value - value + margin
                 floor = max(paid, hold_value - nw["value"] + cfg["swap_margin"])
                 walked, sd, sr, got = pair_depth(*bids, floor, selling=True)
+                if walked > 0 and execute:               # step 2's books are minutes old: re-check on fresh ones
+                    d, r = races[race]["Democratic"], races[race]["Republican"]
+                    walked, sd, sr, got = pair_depth(bid_ladder(cup.orderbook(tid, d), side),
+                                                     bid_ladder(cup.orderbook(tid, r), side), floor, selling=True)
                 if walked <= 0:
                     continue
                 n, avg = min(walked, q, nw["qty"]), got / walked
                 gain = avg - (hold_value - nw["value"])  # per pair, vs holding
+                if n * gain < cfg["swap_min_gain"]:
+                    continue                             # not worth 4 orders (e.g. 5 pairs, every cycle)
                 ns = nw["side"].upper()
                 print(f"  {tag}: sell {n} {side.upper()} pairs of {race} @ ~{avg:.3f} (paid {paid:.3f}) -> buy "
                       f"{ns}+{ns} {nw['race']} @ {nw['cost']:.3f}: {gain:+.3f}/pair, {n * gain:+,.0f} vs holding")
@@ -439,8 +473,8 @@ def run(cup, t, live, cfg, max_pairs=0, shared=False):
                     st["unwind"] = {"Democratic": sd, "Republican": sr}       # lets step 1 finish a part-fill
                     res = cup.multi_leg(tid, [(d, side, "sell", n, sd), (r, side, "sell", n, sr)])
                     fd, fr = (cancel_rest(cup, o) for o in res)
-                    book(race, d, side, fd, "sell")
-                    book(race, r, side, fr, "sell")
+                    book(race, d, side, fd, "sell", sd)
+                    book(race, r, side, fr, "sell", sr)
                     print(f"    sold D {fd} / R {fr}" + ("" if fd == fr else "  (uneven: leftover leg sold next run)"))
                     if fd == fr:
                         st.pop("unwind")
@@ -449,7 +483,7 @@ def run(cup, t, live, cfg, max_pairs=0, shared=False):
                     print(f"  ! swap sale failed on {race}: {e}")
                     break
                 m, nr = min(fd, fr), nw["race"]
-                if m:
+                if m > 0:
                     nd_, nr_ = races[nr]["Democratic"], races[nr]["Republican"]
                     try:
                         res = cup.multi_leg(tid, [(nd_, nw["side"], "buy", m, nw["lim"][0]),
@@ -457,8 +491,8 @@ def run(cup, t, live, cfg, max_pairs=0, shared=False):
                         bd, br = (cancel_rest(cup, o) for o in res)
                         if bd or br:
                             state.setdefault(nr, {"side": nw["side"], "legs": {nd_: 0, nr_: 0}})
-                            book(nr, nd_, nw["side"], bd, "buy")
-                            book(nr, nr_, nw["side"], br, "buy")
+                            book(nr, nd_, nw["side"], bd, "buy", nw["lim"][0])
+                            book(nr, nr_, nw["side"], br, "buy", nw["lim"][1])
                             stats["fills"].append([time.time(), min(bd, br) * max(gain, 0)])   # the swap's extra profit
                         print(f"    bought D {bd} / R {br}" + ("" if bd == br else "  (uneven: repaired next run)"))
                     except Exception as e:
@@ -470,6 +504,13 @@ def run(cup, t, live, cfg, max_pairs=0, shared=False):
     finally:
         if live:
             save_state(state)
+            if start * cfg["max_total"] - in_arbs <= 0:
+                unfunded = 0                         # at the 75% cap pairs wait on the cap, not on cash: more cash
+                                                     # can't fund them, so gap.py mustn't rotate money here
+            # keep the freed cash for the arb only while arbs are waiting for money and the 75% cap has room;
+            # otherwise it would just sit idle, so the gap step may use it
+            keep = reserved if unfunded > 0 else 0.0
             stats.update(time=time.time(), capital=in_arbs, unfunded=unfunded,
+                         reserved=round(max(0.0, min(keep, start * cfg["max_total"] - in_arbs)), 2),
                          fills=[f for f in stats["fills"] if f[0] >= time.time() - 72 * 3600])
             save_stats(stats)
