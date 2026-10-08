@@ -16,7 +16,7 @@ RESTART_CMD = os.environ.get("SIG_RESTART_CMD") or (   # shown in start/stop not
     "trade --arb --loop 60 --yes --tournament midterm-elections > /dev/null 2>&1 &")
 LOG_FILE = os.path.join(LOG_DIR, "bot.log")
 STATS_FILE = os.path.join(DATA_DIR, "stats.csv")   # hourly leaderboard / equity snapshots (for pacing and Sharpe / drawdown)
-STATS_COLUMNS = ["time_utc", "rank", "ranked", "pnl", "equity", "cash", "holdings",
+STATS_COLUMNS = ["time_utc", "rank", "ranked", "pnl", "pnl_realized", "equity", "cash", "holdings",
                  "cutoff_top5", "cutoff_top10", "leader_pnl", "sharpe_api", "pnl_sell_now", "pnl_fair",
                  "volume", "volume_top5_median", "smart_score", "smart_rank", "smart_traders", "smart_elite"]
 
@@ -83,6 +83,8 @@ def log_stats(cup, t):
     pnl = cup.req("GET", f"/tournaments/{slug}/portfolio/pnl", {"period": "all"})
     row = {"time_utc": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M"), "rank": lb["myRank"] or "",
            "ranked": n, "pnl": round(pnl["totalAccountValue"] - t["initialBalance"], 2),
+           # closed trades only: total P&L minus what open positions are marked at above/below their cost
+           "pnl_realized": round(pnl["totalAccountValue"] - t["initialBalance"] - pnl["unrealizedPnl"], 2),
            "equity": round(pnl["totalAccountValue"], 2), "cash": round(t["myBalance"], 2),
            "holdings": round(pnl["totalHoldingsValue"], 2), "cutoff_top5": pnl_at(0.05),
            "cutoff_top10": pnl_at(0.10), "leader_pnl": lb["leaderboard"][0]["pnl"] if lb["leaderboard"] else "",
@@ -104,7 +106,8 @@ def log_stats(cup, t):
         if new_file:
             w.writeheader()
         w.writerow(row)
-    print(f"\nSTATS  rank {row['rank']} of {n}  P&L {row['pnl']:+,.0f} (sell now {row['pnl_sell_now']:+,.0f}, "
+    print(f"\nSTATS  rank {row['rank']} of {n}  P&L {row['pnl']:+,.0f} (realized {row['pnl_realized']:+,.0f}, "
+          f"sell now {row['pnl_sell_now']:+,.0f}, "
           f"at fair value {row['pnl_fair']:+,.0f})  |  top 10% {row['cutoff_top10']:+,.0f}"
           f"  top 5% {row['cutoff_top5']:+,.0f}  |  invested {row['holdings']:,.0f}, cash {row['cash']:,.0f}"
           + (f"  |  smart score {row['smart_score']} (rank {row['smart_rank']} of {row['smart_traders']})"
