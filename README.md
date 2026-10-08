@@ -32,8 +32,9 @@ Goal: a top 5–10% finish with low variance, rather than a lottery-style shot a
 - **Rotation**: a position is sold early when its money would earn more in the arb: only at or
   above cost, only while arbs are waiting for cash, only if holding earns less per day than half
   the arb's *measured* daily return (and the arb measures ≥ 0.5%/day), never in the final week, at
-  most one per cycle. Competitive positions additionally need 7+ days held and an edge below the
-  entry threshold (i.e. we wouldn't buy them today).
+  most one per cycle. Competitive positions additionally need 3+ days held (share-weighted) and an
+  edge below the entry threshold (i.e. we wouldn't buy them today). The sale's cash is kept for the
+  arb, so the gap step can't re-spend it.
 
 ### D + R arbitrage
 - **NO + NO**: if `bid(D) + bid(R) > 1`, buy NO on both. One of them always pays 1, and a

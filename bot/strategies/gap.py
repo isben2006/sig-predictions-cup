@@ -38,8 +38,9 @@ SAFE = dict(
                               # (extra money goes to the arb's thinner pairs, so it earns less than average)
     rotate_min_arb=0.005,     # and the arb must have measured >= 0.5%/day: if arbs slow down, no rotation
     rotate_min_days_left=7,   # never in the final week: near-certain positions are about to pay out
-    rotate_min_age=7,         # competitive positions: only after 7 days held (time to converge), and only
-                              # if we wouldn't buy them today (edge at the ask below entry_edge)
+    rotate_min_age=3,         # competitive positions: only after 3 days held (share-weighted), and only if we
+                              # wouldn't buy them today (edge at the ask below entry_edge). Was 7: the gap
+                              # trades that converged mostly did within 0.5-3 days; older ones tend to linger
 )
 # --aggressive: fewer, bigger, held-to-settlement bets. Built for top-3-or-nothing payouts.
 AGGRESSIVE = dict(
