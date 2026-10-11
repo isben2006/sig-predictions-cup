@@ -7,6 +7,7 @@
 #   deploy/deploy.sh logs     follow the bot's output
 #   deploy/deploy.sh status   service state and the latest stats line
 #   deploy/deploy.sh start | stop | restart
+#   deploy/deploy.sh mm-logs | mm-start | mm-stop | mm-restart   the market maker (sig-mm, bot/strategies/mm.py)
 #
 # The server comes from SIG_SERVER (e.g. bot@1.2.3.4), in the environment or in .env.
 # The SSH key comes from SIG_SSH_KEY (default ~/.ssh/sig-bot).
@@ -48,11 +49,14 @@ setup)
 push)
     changed=$(push_code)
     echo "${changed:-no changes}"
-    if grep -q '^deploy/sig-bot.service' <<<"$changed"; then
-        "${SSH[@]}" "$SIG_SERVER" "sudo cp $DIR/deploy/sig-bot.service /etc/systemd/system/ && sudo systemctl daemon-reload"
-    fi
-    if grep -qE '^(main\.py|requirements\.txt|bot/.*\.py|deploy/sig-bot\.service)$' <<<"$changed"; then
-        "${SSH[@]}" "$SIG_SERVER" "cd $DIR && .venv/bin/pip install -q -r requirements.txt && sudo systemctl restart sig-bot && systemctl is-active sig-bot"
+    for unit in sig-bot sig-mm; do
+        if grep -q "^deploy/$unit.service" <<<"$changed"; then
+            "${SSH[@]}" "$SIG_SERVER" "sudo cp $DIR/deploy/$unit.service /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl enable $unit"
+        fi
+    done
+    if grep -qE '^(main\.py|requirements\.txt|bot/.*\.py|deploy/sig-(bot|mm)\.service)$' <<<"$changed"; then
+        "${SSH[@]}" "$SIG_SERVER" "cd $DIR && .venv/bin/pip install -q -r requirements.txt && sudo systemctl restart sig-bot && systemctl is-active sig-bot
+            if systemctl is-enabled --quiet sig-mm 2>/dev/null; then sudo systemctl restart sig-mm && echo -n 'mm: ' && systemctl is-active sig-mm; fi"
     fi
     ;;
 pull)
@@ -62,5 +66,7 @@ pull)
 logs)    "${SSH[@]}" -t "$SIG_SERVER" journalctl -u sig-bot -f -o cat ;;
 status)  "${SSH[@]}" "$SIG_SERVER" "systemctl status sig-bot --no-pager | head -5; grep STATS $DIR/logs/bot.log | tail -1" ;;
 start|stop|restart) "${SSH[@]}" "$SIG_SERVER" "sudo systemctl $1 sig-bot && systemctl is-active sig-bot || true" ;;
+mm-logs) "${SSH[@]}" -t "$SIG_SERVER" journalctl -u sig-mm -f -o cat ;;
+mm-start|mm-stop|mm-restart) "${SSH[@]}" "$SIG_SERVER" "sudo systemctl ${1#mm-} sig-mm && systemctl is-active sig-mm || true" ;;
 *)  sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
 esac

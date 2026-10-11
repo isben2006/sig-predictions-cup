@@ -1,0 +1,18 @@
+# systemd unit for the market maker (bot/strategies/mm.py), next to sig-bot. Installed by `deploy/deploy.sh push` to
+# /etc/systemd/system/sig-mm.service. SIGTERM cancels its quotes before exiting.
+[Unit]
+Description=SIG Predictions Cup market maker (shadow until MM["mode"] = "live")
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=bot
+WorkingDirectory=/home/bot/sig-predictions-cup
+ExecStart=/home/bot/sig-predictions-cup/.venv/bin/python -u main.py mm --tournament midterm-elections
+Restart=always
+RestartSec=30
+KillSignal=SIGTERM
+TimeoutStopSec=60
+
+[Install]
+WantedBy=multi-user.target

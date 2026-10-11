@@ -32,7 +32,7 @@ Goal: a top 5–10% finish with low variance, rather than a lottery-style shot a
 - **Rotation**: a position is sold early when its money would earn more in the arb: only at or
   above cost, only while arbs are waiting for cash, only if holding earns less per day than half
   the arb's *measured* daily return (and the arb measures ≥ 0.5%/day), never in the final week, at
-  most one per cycle. Competitive positions additionally need 3+ days held (share-weighted) and an
+  most one per cycle. Competitive positions additionally need 7+ days held (share-weighted) and an
   edge below the entry threshold (i.e. we wouldn't buy them today). The sale's cash is kept for the
   arb, so the gap step can't re-spend it.
 
@@ -51,6 +51,22 @@ Goal: a top 5–10% finish with low variance, rather than a lottery-style shot a
   cash can be reused.
 - **Capital**: the arb is the volume engine. It may use up to 75% of the bankroll; the gap step
   still gets first claim on cash each cycle, and 2% stays free for repairing one-sided fills.
+
+### Market making (pilot, realtime)
+A separate process (`main.py mm`, systemd `sig-mm`) quotes both sides of a few liquid contracts whose
+contest price agrees with Kalshi/Polymarket, earning the spread when both sides fill. It is chosen from
+data: 48 hours of the contest's trade tape showed most edge "around fair" was one-sided mispricing (the
+gap trade), while ~680k shares/day traded two-sided in 71 contracts priced near fair.
+- **Realtime**: order books and our fills arrive over the contest's WebSocket feed (one-second batches,
+  versioned books); quotes follow the book within a second instead of once a cycle. Books are re-read over
+  REST after any missed batch, reconnect or token refresh, as the feed is best-effort.
+- **Quoting**: join the best bid / best ask (step inside spreads of 3+ ticks), only while the book's mid is
+  within 2 points of fair value, and never on the wrong side of fair. Quotes are pulled when fair moves a
+  point, when the feed is unhealthy, and on exit.
+- **Risk**: ±1,000 shares per contract, $5,000 of capital (the trading loop's cash floor rose to 7% to fund
+  it), its own 10-writes/min share of the account's API budget; the trading loop stays out of its races.
+- **Shadow mode first**: it simulates queue position (orders already at our price trade first) and fills
+  from the live trade tape, to measure the edge before any money is at risk.
 
 ### Running both on the same races
 The account only shows one net position per contract, so the strategies are coordinated
@@ -91,9 +107,12 @@ bot/
   strategies/
     gap.py                 fair-value gap trading (entry/exit rules, Kelly sizing, risk limits)
     arb.py                 D + R arbitrage (pair logic, share ledger, repair, early exit)
+    mm.py                  market-making pilot (quoting rules, shadow fill simulation, live quotes)
+  realtime.py              WebSocket feed client: live order books + our fills, with REST resync
 deploy/
   deploy.sh                set up, update and monitor the server from the laptop
   sig-bot.service          systemd unit for the trading loop
+  sig-mm.service           systemd unit for the market maker
 data/                      mapping.csv, stats.csv, arb_races.json (live arb ledger, not in git)
 logs/                      bot.log (not in git)
 ```

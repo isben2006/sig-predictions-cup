@@ -24,6 +24,7 @@ import os
 
 from bot.common import (DATA_DIR, KALSHI_EVENT_URL, ORDER_TTL_SECONDS, TICK, _num, kalshi_event, load_mapping,
                         party_of, race_key)
+from bot.strategies import mm
 
 ARB = dict(
     min_profit=0.01,      # lock in at least 1 point per pair (pair costs <= 0.99)
@@ -35,8 +36,9 @@ ARB = dict(
     yes_both=True,        # YES+YES pays 0 if a third party wins; never used in races with a 3rd contract
     max_race=0.05,        # at most 5% of starting balance in one race's pair
     max_total=0.75,       # at most 75% of starting balance in arb pairs overall: the volume engine
-    keep_cash=0.02,       # never spend the last 2% of starting balance: cash for completing one-sided
-                          # fills (repairs aren't budget-limited). Raise it before election night.
+    keep_cash=0.07,       # never spend the last 7% of starting balance: 2% for completing one-sided fills
+                          # (repairs aren't budget-limited) + 5% for the market maker (mm.py). Raise it
+                          # before election night.
     max_cash=0.50,        # never use more than 50% of current cash in one run
     unwind_keep=0.5,      # sell a pair early if that keeps >= 50% of its settlement profit
     swap="live",        # swap a held pair into a cheaper waiting one (step 4 of run): "shadow" = only log
@@ -214,6 +216,7 @@ def run(cup, t, live, cfg, max_pairs=0, shared=False):
     for ex_id, r in rows.items():
         if party_of(r["market_title"]):
             races.setdefault(race_key(r["market_title"]), {})[party_of(r["market_title"])] = ex_id
+    mm_races = mm.excluded_races()                   # the market maker's races: no new pairs there
     gap_races = set() if shared else {race_key(r["market_title"]) for r in rows.values()
                                       if r.get("kalshi_ticker") or r.get("polymarket_slug")}
     pos = {p["exchangeId"]: p for p in cup.positions(slug)["positions"] if p["quantity"] and not p["settled"]}
@@ -333,7 +336,7 @@ def run(cup, t, live, cfg, max_pairs=0, shared=False):
         quotes = cup.prices(tid, [e for p in races.values() for e in p.values()])
         opps = []
         for race, parties in races.items():
-            if race in gap_races or not {"Democratic", "Republican"} <= set(parties):
+            if race in gap_races or race in mm_races or not {"Democratic", "Republican"} <= set(parties):
                 continue
             d, r = parties["Democratic"], parties["Republican"]
             st = state.get(race, {})

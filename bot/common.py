@@ -75,16 +75,19 @@ MAP_COLUMNS = ["exchange_id", "market_id", "market_title", "option",
 class Cup:
     """Thin client. Standard accounts get 100 reads + 30 writes per minute."""
 
-    def __init__(self, key):
+    def __init__(self, key, reads_per_min=80, writes_per_min=18):
+        """The account limits are shared by every process using the key: the trading loop paces itself to
+        80 reads + 18 writes a minute, leaving 10 writes (and some reads) for the market maker (mm.py)."""
         if not key:
             sys.exit("Set SIG_API_KEY first (My Profile -> API Keys).")
         self.s = requests.Session()
         self.s.headers.update({"Authorization": f"Bearer {key}", "Content-Type": "application/json"})
+        self.read_gap, self.write_gap = 60 / reads_per_min, 60 / writes_per_min
         self.last_read = 0.0
         self.last_write = 0.0
 
     def _wait(self, write):
-        gap = 60 / 25 if write else 60 / 90       # stay safely under the limits
+        gap = self.write_gap if write else self.read_gap
         last = self.last_write if write else self.last_read
         sleep = last + gap - time.time()
         if sleep > 0:
