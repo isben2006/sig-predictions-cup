@@ -45,20 +45,22 @@ def excluded_races():
     return {race_key(m[ex]["market_title"]) for ex in MM["markets"] if ex in m}
 
 
-def desired_quotes(book, fair, inv, cfg=MM):
-    """{"bid": (price, qty) or None, "ask": (price, qty) or None} for one contract."""
+def desired_quotes(book, fair, inv, cfg=MM, use_fair=True):
+    """{"bid": (price, qty) or None, "ask": (price, qty) or None} for one contract.
+    use_fair=False is the "symmetric" shadow variant: always join both sides, whatever fair value says
+    (only the inventory caps apply), to measure whether the fair-value rules cost more than they save."""
     bids, asks = book.get("bids") or [], book.get("asks") or []
-    if fair is None or not bids or not asks:
+    if (use_fair and fair is None) or not bids or not asks:
         return {"bid": None, "ask": None}
     bb, ba = bids[0]["price"], asks[0]["price"]
-    if abs((bb + ba) / 2 - fair) > cfg["band"] + 1e-9:
+    if use_fair and abs((bb + ba) / 2 - fair) > cfg["band"] + 1e-9:
         return {"bid": None, "ask": None}             # the contest disagrees with fair: that's gap territory
     wide = ba - bb > 2 * TICK + 1e-9                  # 3+ ticks: step inside on both sides, first in line
     bid = round(bb + TICK, 3) if wide else bb         # (at 2 ticks that would put our bid on our ask)
     ask = round(ba - TICK, 3) if wide else ba
     room_buy, room_sell = cfg["max_inventory"] - inv, cfg["max_inventory"] + inv
-    return {"bid": (bid, min(cfg["size"], room_buy)) if bid < fair - 1e-9 and room_buy > 0 else None,
-            "ask": (ask, min(cfg["size"], room_sell)) if ask > fair + 1e-9 and room_sell > 0 else None}
+    return {"bid": (bid, min(cfg["size"], room_buy)) if (not use_fair or bid < fair - 1e-9) and room_buy > 0 else None,
+            "ask": (ask, min(cfg["size"], room_sell)) if (not use_fair or ask > fair + 1e-9) and room_sell > 0 else None}
 
 
 def capital_used(inv, fair, resting):
@@ -71,9 +73,23 @@ class Sim:
     """Shadow fills for one contract: our virtual orders sit behind whatever was already at their price
     (cancellations ahead move us up; newcomers join behind), and fill from the real trade tape."""
 
-    def __init__(self):
+    KEYS = ("inv", "cash", "fills", "bought", "sold")
+
+    def __init__(self, state=None):
         self.quotes = {"bid": None, "ask": None}       # kind -> {"price", "qty", "ahead"}
         self.inv, self.cash, self.fills, self.bought, self.sold = 0, 0.0, 0, 0, 0
+        for k, v in (state or {}).items():             # restored after a restart, so a test survives deploys
+            if k in self.KEYS:
+                setattr(self, k, v)
+
+    def state(self, fair, mid):
+        """Counters plus P&L two ways: at fair value (how a called race settles) and at the contest mid
+        (the leaderboard, and how an unresolved race settles: the contest's own 5-hour VWAP)."""
+        out = {k: getattr(self, k) for k in self.KEYS}
+        out["round_trips"] = min(self.bought, self.sold)
+        out["pnl_at_fair"] = round(self.cash + self.inv * fair, 2) if fair is not None else None
+        out["pnl_at_mid"] = round(self.cash + self.inv * mid, 2) if mid is not None else None
+        return out
 
     def place(self, kind, want, book):
         if want is None:
@@ -143,7 +159,18 @@ class MarketMaker:
         quotes = cup.prices(self.tid, self.ex)
         self.names = {e: f'{race_key(self.rows[e]["market_title"])} {self.rows[e]["market_title"].split()[2][0]}' for e in self.ex}
         self.fair, self.quoted_fair = {}, {}
-        self.sims = {e: Sim() for e in self.ex}
+        saved = {}
+        try:                                                # shadow counters survive restarts (deploys)
+            with open(STATS_FILE) as fh:
+                saved = json.load(fh)
+        except (OSError, ValueError):
+            pass
+        if saved.get("mode") != "shadow" or self.live or "variants" not in saved:
+            saved = {}
+        sv = saved.get("variants", {})
+        self.sims = {e: Sim(sv.get("fair", {}).get(e)) for e in self.ex}
+        self.sym = {e: Sim(sv.get("symmetric", {}).get(e)) for e in self.ex}       # shadow: quotes both sides
+        self.sym_resting = {e: {"bid": None, "ask": None} for e in self.ex}
         self.resting = {e: {"bid": None, "ask": None} for e in self.ex}   # live/shadow quotes we have out
         self.inv = {e: 0 for e in self.ex}                                 # live inventory (shadow uses Sim)
         self.cash_room = cfg["max_capital"]
@@ -151,12 +178,13 @@ class MarketMaker:
         self.dirty, self.stop, self._need_positions = set(), False, False
         self.feed = Feed(cup, self.tid, {e: quotes[e]["marketId"] for e in self.ex}, on_change=self._on_book,
                          on_trades=self._on_trades, on_fills=self._on_fills)
-        self.t0 = time.time()
+        self.t0 = saved.get("since") or time.time()
 
     # ---- feed callbacks
     def _on_book(self, ex):
         if ex in self.feed.books:
             self.sims[ex].on_book(self.feed.books[ex])
+            self.sym[ex].on_book(self.feed.books[ex])
         self.dirty.add(ex)
 
     def _on_trades(self, trades):
@@ -166,13 +194,13 @@ class MarketMaker:
             ex, price = str(tr["exchangeId"]), tr.get("price")
             if price is None:
                 continue
-            hit = self.sims[ex].on_trade(price, int(tr.get("quantity") or 0))
-            if hit:
-                kind, n, p = hit
-                s = self.sims[ex]
-                print(f"{time.strftime('%H:%M:%S')}  SHADOW FILL {self.names[ex]:34s} {'bought' if kind == 'bid' else 'sold'} "
-                      f"{n} YES @ {p:.3f} (fair {self.fair.get(ex, 0):.3f})  inventory {s.inv:+d}")
-                self.dirty.add(ex)
+            for label, sims in (("SHADOW FILL", self.sims), ("SHADOW-SYM FILL", self.sym)):
+                hit = sims[ex].on_trade(price, int(tr.get("quantity") or 0))
+                if hit:
+                    kind, n, p = hit
+                    print(f"{time.strftime('%H:%M:%S')}  {label:15s} {self.names[ex]:16s} {'bought' if kind == 'bid' else 'sold'} "
+                          f"{n} YES @ {p:.3f} (fair {self.fair.get(ex) or 0:.3f})  inventory {sims[ex].inv:+d}")
+                    self.dirty.add(ex)
 
     def _on_fills(self, fills):
         for f in fills:
@@ -228,9 +256,24 @@ class MarketMaker:
         self.resting[ex] = placed
 
     # ---- the quoting decision for one contract
+    def requote_symmetric(self, ex, book):
+        """Shadow-only comparison: both sides at the best prices, fair value ignored."""
+        want = (desired_quotes(book, None, self.sym[ex].inv, self.cfg, use_fair=False)
+                if self.feed.healthy and book else {"bid": None, "ask": None})
+        for k in ("bid", "ask"):
+            have = self.sym_resting[ex][k]
+            if want[k] is None and have is None:
+                continue
+            if (want[k] is None) != (have is None) or abs(want[k][0] - have[0]) > 1e-9 or \
+                    abs(want[k][1] - have[1]) > self.cfg["min_resize"] * have[1]:
+                self.sym[ex].place(k, want[k], book)
+                self.sym_resting[ex][k] = want[k]
+
     async def requote(self, ex):
         book, fair = self.feed.books.get(ex), self.fair.get(ex)
         have = self.resting[ex]
+        if not self.live:
+            self.requote_symmetric(ex, book)
         if not self.feed.healthy or book is None or fair is None:
             want = {"bid": None, "ask": None}
         else:
@@ -310,20 +353,28 @@ class MarketMaker:
 
     def report(self):
         hours = (time.time() - self.t0) / 3600
-        rows = {}
+        rows, variants = {}, {"fair": {}, "symmetric": {}}
         for ex in self.ex:
-            s, f = self.sims[ex], self.fair.get(ex) or 0.0
-            pnl = s.cash + s.inv * f if not self.live else None
-            rows[ex] = {"name": self.names[ex], "fair": f, "quotes": self.resting[ex], "inventory": self.inventory(ex),
-                        "shadow_fills": s.fills, "bought": s.bought, "sold": s.sold,
-                        "shadow_pnl_at_fair": round(pnl, 2) if pnl is not None else None}
+            f, book = self.fair.get(ex), self.feed.books.get(ex) or {}
+            mid = ((book["bids"][0]["price"] + book["asks"][0]["price"]) / 2
+                   if book.get("bids") and book.get("asks") else None)
+            rows[ex] = {"name": self.names[ex], "fair": f, "mid": mid, "quotes": self.resting[ex],
+                        "inventory": self.inventory(ex)}
             q = self.resting[ex]
-            print(f"{time.strftime('%H:%M:%S')}  MM {self.names[ex]:34s} fair {f:.3f}  "
-                  f"bid {q['bid'] or '-'}  ask {q['ask'] or '-'}  inv {self.inventory(ex):+d}"
-                  + (f"  shadow: {s.fills} fills, bought {s.bought} sold {s.sold}, P&L at fair {pnl:+.2f}" if pnl is not None else ""))
+            line = (f"{time.strftime('%H:%M:%S')}  MM {self.names[ex]:16s} fair {f or 0:.3f} mid {mid or 0:.4f}  "
+                    f"bid {q['bid'] or '-'}  ask {q['ask'] or '-'}  inv {self.inventory(ex):+d}")
+            if not self.live:
+                for name, sims in (("fair", self.sims), ("symmetric", self.sym)):
+                    st = variants[name][ex] = sims[ex].state(f, mid)
+                    line += (f"\n          {name:9s}: {st['fills']} fills, bought {st['bought']} sold {st['sold']} "
+                             f"(round trips {st['round_trips']}), inv {st['inv']:+d}, "
+                             f"P&L at fair {st['pnl_at_fair'] if st['pnl_at_fair'] is not None else '-'} / at mid "
+                             f"{st['pnl_at_mid'] if st['pnl_at_mid'] is not None else '-'}")
+            print(line)
         try:
             with open(STATS_FILE, "w") as fh:
-                json.dump({"mode": self.cfg["mode"], "since": self.t0, "hours": round(hours, 2), "contracts": rows}, fh)
+                json.dump({"mode": self.cfg["mode"], "since": self.t0, "hours": round(hours, 2), "contracts": rows,
+                           "variants": variants if not self.live else None}, fh)
         except OSError:
             pass
 
