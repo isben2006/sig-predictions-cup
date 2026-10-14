@@ -27,8 +27,9 @@ SAFE = dict(
     sure_edge=0.05,       # converge before settlement (favorite-longshot bias), so they need a 5-pt edge
     max_sure=0.20,        # and at most 20% of starting balance in them in total
     max_spend=0.30,       # never spend more than 30% of cash in a single run
-    min_cash=0.07,        # stop buying once cash is below 7% of starting balance (sells still happen):
-                          # 2% for arb repairs + 5% for the market maker (mm.py, max_capital 5,000).
+    min_cash=0.02,        # stop buying once cash is below 2% of starting balance (sells still happen): kept
+                          # for arb repairs. Raise to 0.07 when the market maker (mm.py) trades live, to
+                          # leave it its 5,000 (Oct 11-14 it was at 0.07 while mm.py only ran in shadow).
                           # The gap step runs before the arb each cycle, so it gets first claim on cash.
     hold_edge=None,       # always exit once the gap closes, freeing cash for the next edge
     longshot=False,

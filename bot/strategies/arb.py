@@ -36,9 +36,9 @@ ARB = dict(
     yes_both=True,        # YES+YES pays 0 if a third party wins; never used in races with a 3rd contract
     max_race=0.05,        # at most 5% of starting balance in one race's pair
     max_total=0.75,       # at most 75% of starting balance in arb pairs overall: the volume engine
-    keep_cash=0.07,       # never spend the last 7% of starting balance: 2% for completing one-sided fills
-                          # (repairs aren't budget-limited) + 5% for the market maker (mm.py). Raise it
-                          # before election night.
+    keep_cash=0.02,       # never spend the last 2% of starting balance: cash for completing one-sided fills
+                          # (repairs aren't budget-limited). 0.07 when the market maker (mm.py) trades live
+                          # (its 5,000). Raise it before election night.
     max_cash=0.50,        # never use more than 50% of current cash in one run
     unwind_keep=0.5,      # sell a pair early if that keeps >= 50% of its settlement profit
     swap="live",        # swap a held pair into a cheaper waiting one (step 4 of run): "shadow" = only log

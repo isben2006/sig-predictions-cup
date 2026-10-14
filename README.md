@@ -63,8 +63,9 @@ gap trade), while ~680k shares/day traded two-sided in 71 contracts priced near 
 - **Quoting**: join the best bid / best ask (step inside spreads of 3+ ticks), only while the book's mid is
   within 2 points of fair value, and never on the wrong side of fair. Quotes are pulled when fair moves a
   point, when the feed is unhealthy, and on exit.
-- **Risk**: ±1,000 shares per contract, $5,000 of capital (the trading loop's cash floor rose to 7% to fund
-  it), its own 10-writes/min share of the account's API budget; the trading loop stays out of its races.
+- **Risk**: ±1,000 shares per contract, $5,000 of capital (the trading loop's cash floor goes from 2% to 7%
+  while it trades live), its own 10-writes/min share of the account's API budget; the trading loop stays
+  out of its races.
 - **Shadow mode first**: it simulates queue position (orders already at our price trade first) and fills
   from the live trade tape, to measure the edge before any money is at risk.
 
