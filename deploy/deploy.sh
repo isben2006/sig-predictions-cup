@@ -8,6 +8,7 @@
 #   deploy/deploy.sh status   service state and the latest stats line
 #   deploy/deploy.sh start | stop | restart
 #   deploy/deploy.sh mm-logs | mm-start | mm-stop | mm-restart   the market maker (sig-mm, bot/strategies/mm.py)
+#   deploy/deploy.sh calls-logs | calls-start | calls-stop | calls-restart   election night (sig-calls, calls.py)
 #
 # The server comes from SIG_SERVER (e.g. bot@1.2.3.4), in the environment or in .env.
 # The SSH key comes from SIG_SSH_KEY (default ~/.ssh/sig-bot).
@@ -49,14 +50,17 @@ setup)
 push)
     changed=$(push_code)
     echo "${changed:-no changes}"
-    for unit in sig-bot sig-mm; do
+    for unit in sig-bot sig-mm sig-calls; do
         if grep -q "^deploy/$unit.service" <<<"$changed"; then
             "${SSH[@]}" "$SIG_SERVER" "sudo cp $DIR/deploy/$unit.service /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl enable $unit"
         fi
     done
-    if grep -qE '^(main\.py|requirements\.txt|bot/.*\.py|deploy/sig-(bot|mm)\.service)$' <<<"$changed"; then
-        "${SSH[@]}" "$SIG_SERVER" "cd $DIR && .venv/bin/pip install -q -r requirements.txt && sudo systemctl restart sig-bot && systemctl is-active sig-bot
-            if systemctl is-enabled --quiet sig-mm 2>/dev/null; then sudo systemctl restart sig-mm && echo -n 'mm: ' && systemctl is-active sig-mm; fi"
+    # restart only what is running: on election night sig-bot is stopped and must stay stopped
+    if grep -qE '^(main\.py|requirements\.txt|bot/.*\.py|deploy/sig-(bot|mm|calls)\.service)$' <<<"$changed"; then
+        "${SSH[@]}" "$SIG_SERVER" "cd $DIR && .venv/bin/pip install -q -r requirements.txt
+            for u in sig-bot sig-mm sig-calls; do
+                if systemctl is-active --quiet \$u; then sudo systemctl restart \$u && echo -n \"\$u: \" && systemctl is-active \$u; fi
+            done"
     fi
     ;;
 pull)
@@ -68,5 +72,7 @@ status)  "${SSH[@]}" "$SIG_SERVER" "systemctl status sig-bot --no-pager | head -
 start|stop|restart) "${SSH[@]}" "$SIG_SERVER" "sudo systemctl $1 sig-bot && systemctl is-active sig-bot || true" ;;
 mm-logs) "${SSH[@]}" -t "$SIG_SERVER" journalctl -u sig-mm -f -o cat ;;
 mm-start|mm-stop|mm-restart) "${SSH[@]}" "$SIG_SERVER" "sudo systemctl ${1#mm-} sig-mm && systemctl is-active sig-mm || true" ;;
-*)  sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
+calls-logs) "${SSH[@]}" -t "$SIG_SERVER" journalctl -u sig-calls -f -o cat ;;
+calls-start|calls-stop|calls-restart) "${SSH[@]}" "$SIG_SERVER" "sudo systemctl ${1#calls-} sig-calls && systemctl is-active sig-calls || true" ;;
+*)  sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
 esac

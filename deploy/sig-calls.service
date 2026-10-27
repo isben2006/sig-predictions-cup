@@ -1,0 +1,19 @@
+# systemd unit for the election-night bot (bot/strategies/calls.py). Installed by `deploy/deploy.sh push` to
+# /etc/systemd/system/sig-calls.service. Until the night it runs as a shadow test (--test: every state's polls
+# treated as closed); on Nov 3 --test comes off and CALLS["mode"] goes "live", with sig-bot stopped.
+[Unit]
+Description=SIG Predictions Cup election-night bot (shadow until CALLS["mode"] = "live")
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=bot
+WorkingDirectory=/home/bot/sig-predictions-cup
+ExecStart=/home/bot/sig-predictions-cup/.venv/bin/python -u main.py calls --test --tournament midterm-elections
+Restart=on-failure
+RestartSec=30
+KillSignal=SIGTERM
+TimeoutStopSec=60
+
+[Install]
+WantedBy=multi-user.target

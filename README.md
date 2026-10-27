@@ -68,6 +68,29 @@ gap trade), while ~680k shares/day traded two-sided in 71 contracts priced near 
   out of its races.
 - **Shadow mode first**: it simulates queue position (orders already at our price trade first) and fills
   from the live trade tape, to measure the edge before any money is at risk.
+- **Outcome**: the shadow results (Oct 11-13) didn't beat leaving the money in the arb, so it never went
+  live; the shadow run was switched off on Oct 27 to give election night the API budget.
+
+### Election night (calls)
+Races are called within hours of polls closing, but every contest market stays open until trading ends
+(Nov 4, noon ET) and settles at 0/1 later. A separate fast process (`main.py calls`, systemd `sig-calls`)
+trades that delay:
+- **Signal**: Kalshi and Polymarket are polled every 3 seconds (all ~230 contracts in ~1 s). A race counts as
+  called only after all of its state's polls have closed, and when both sources hold the winner at ≥ 99%
+  for 30 s (safe races; safe races trade at 97-99% for weeks), ≥ 98% for 60 s (close races), ≥ 99.5% for
+  2 minutes with one source down, or at once when Kalshi records a result (its markets settle early on a
+  consensus of media projections).
+- **Dead legs**: in a called race one leg of every arb pair is now worth 0, but the contest still pays for
+  it; it is sold, and the other leg still pays 1 at settlement.
+- **Called winners**: bought with cash at ≤ 0.95. Cash is paced: before 9 pm ET at most 40% of it goes to
+  the early safe-race wave unless the edge is ≥ 15 points; $3,000 per race, $6,000 per hour.
+- **Defensive exits**: shares outside pairs that the markets turn decisively against (≤ 30% for a minute)
+  are sold while the contest still pays at least 5 points more than they are worth.
+- **Safety**: one batched order per race (no order-book read first; the limit price caps what we pay),
+  a phone alert for every action, the race is left alone if the markets walk a call back, and live mode
+  refuses to run (and pauses) while the trading loop is running, so one process trades the account.
+- **Tested** offline against a fake contest, then in shadow mode for a week on live prices with every
+  state's polls treated as closed (`--test`).
 
 ### Running both on the same races
 The account only shows one net position per contract, so the strategies are coordinated
@@ -109,11 +132,13 @@ bot/
     gap.py                 fair-value gap trading (entry/exit rules, Kelly sizing, risk limits)
     arb.py                 D + R arbitrage (pair logic, share ledger, repair, early exit)
     mm.py                  market-making pilot (quoting rules, shadow fill simulation, live quotes)
+    calls.py               election night: trade races called in real life before the contest catches up
   realtime.py              WebSocket feed client: live order books + our fills, with REST resync
 deploy/
   deploy.sh                set up, update and monitor the server from the laptop
   sig-bot.service          systemd unit for the trading loop
   sig-mm.service           systemd unit for the market maker
+  sig-calls.service        systemd unit for the election-night bot
 data/                      mapping.csv, stats.csv, arb_races.json (live arb ledger, not in git)
 logs/                      bot.log (not in git)
 ```

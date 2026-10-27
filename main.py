@@ -15,6 +15,8 @@ Commands
   python3 main.py leaderboard  # top 10, your rank, and the top 5% / 10% cutoffs
   python3 main.py stats        # append a snapshot to stats.csv (done hourly while looping)
   python3 main.py mm           # market maker (bot/strategies/mm.py) on the realtime feed; its own process
+  python3 main.py calls        # election night (bot/strategies/calls.py): trade races called in real life; own process
+  python3 main.py calls --check   # audit the contest -> Kalshi/Polymarket mapping first
   add --aggressive to scan/trade for fewer, bigger, held-to-settlement bets
   add --max-orders N to place at most N orders per run (good for a first live test)
 
@@ -36,12 +38,13 @@ from bot.common import API_KEY, LOG_DIR, MAPPING_FILE, Cup, Tee
 from bot.markets import cmd_automap, cmd_markets
 from bot.reporting import (RESTART_CMD, SUMMARY_HOUR, cmd_leaderboard, cmd_positions, daily_summary, log_stats,
                            notify, notify_gap_sales)
-from bot.strategies import arb, gap, mm
+from bot.strategies import arb, calls, gap, mm
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("command", choices=["markets", "automap", "scan", "trade", "positions", "leaderboard", "stats", "mm"])
+    ap.add_argument("command", choices=["markets", "automap", "scan", "trade", "positions", "leaderboard", "stats", "mm",
+                                        "calls"])
     ap.add_argument("--tournament", help="tournament slug (auto-detected if omitted)")
     ap.add_argument("--loop", type=int, default=0, help="repeat every N seconds")
     ap.add_argument("--aggressive", action="store_true",
@@ -54,14 +57,24 @@ def main():
     ap.add_argument("--out", default=MAPPING_FILE, help="automap: where to write the filled-in mapping")
     ap.add_argument("--arb", action="store_true",
                     help="each cycle, run the gap strategy, then the D+R arbitrage (bot/strategies/arb.py) on every race")
+    ap.add_argument("--check", action="store_true", help="calls: audit the mapping and exit")
+    ap.add_argument("--test", action="store_true",
+                    help="calls (shadow only): treat every state's polls as closed, to watch it trigger before the night")
     a = ap.parse_args()
-    log = a.log if a.log is not None else os.path.join(LOG_DIR, "mm.log" if a.command == "mm" else "bot.log")
-    if log and a.command in ("scan", "trade", "mm"):
+    log = a.log if a.log is not None else os.path.join(LOG_DIR, {"mm": "mm.log", "calls": "calls.log"}.get(a.command, "bot.log"))
+    if log and a.command in ("scan", "trade", "mm") or (log and a.command == "calls" and not a.check):
         sys.stdout = sys.stderr = Tee(log)
 
     # the market maker paces its writes with its own budget (mm.MM["writes_per_min"]), so its client
     # only spaces calls a second apart; the trading loop keeps 80 reads + 18 writes a minute
-    cup = Cup(API_KEY, reads_per_min=20, writes_per_min=60) if a.command == "mm" else Cup(API_KEY)
+    # election night (calls, live) has the account to itself: the trading loop and market maker are stopped
+    if a.command == "mm":
+        cup = Cup(API_KEY, reads_per_min=20, writes_per_min=60)
+    elif a.command == "calls":
+        live_calls = calls.CALLS["mode"] == "live"
+        cup = Cup(API_KEY, reads_per_min=90 if live_calls else 15, writes_per_min=28 if live_calls else 1)
+    else:
+        cup = Cup(API_KEY)
     t = cup.tournament(a.tournament)
     print(f"Tournament: {t['name']} ({t['slug']})")
 
@@ -77,6 +90,15 @@ def main():
         return log_stats(cup, t)
     if a.command == "mm":
         return mm.main(cup, t)
+    if a.command == "calls":
+        if a.check:
+            return calls.check_mapping()
+        cfg = dict(calls.CALLS)
+        if a.test:
+            if cfg["mode"] != "shadow":
+                sys.exit("--test is for shadow mode only")
+            cfg.update(test_polls_closed=True, call_safe=(0.97, 30))
+        return calls.main(cup, t, cfg)
 
     cfg = dict(gap.AGGRESSIVE if a.aggressive else gap.SAFE)
     if a.max_frac is not None:
