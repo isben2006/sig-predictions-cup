@@ -27,13 +27,17 @@ SAFE = dict(
     sure_edge=0.05,       # converge before settlement (favorite-longshot bias), so they need a 5-pt edge
     max_sure=0.20,        # and at most 20% of starting balance in them in total
     max_spend=0.30,       # never spend more than 30% of cash in a single run
-    min_cash=0.02,        # stop buying once cash is below 2% of starting balance (sells still happen): kept
-                          # for arb repairs. Raise to 0.07 when the market maker (mm.py) trades live, to
-                          # leave it its 5,000 (Oct 11-14 it was at 0.07 while mm.py only ran in shadow).
+    min_cash=0.12,        # stop buying once cash is below 12% of starting balance (sells still happen). Was
+                          # 2% (arb repairs) until Oct 27; the Alaska/Mississippi sales' ~12,000 is now kept
+                          # for election-night trading (same floor as the arb's keep_cash).
                           # The gap step runs before the arb each cycle, so it gets first claim on cash.
     hold_edge=None,       # always exit once the gap closes, freeing cash for the next edge
     longshot=False,
     max_positions=None,
+    no_buy_races=(        # never buy into these (sells still happen; the arb's pairs are unaffected).
+        "Alaska Senate",       # ranked-choice count takes ~2 weeks: a binary bet we couldn't exit after Nov 4
+        "Mississippi Senate",  # trimmed Oct 27 to cut the 12.5% "D wins" tail; don't rebuild it
+    ),
     # Rotation: sell a gap position early when its money earns more in the arb. Only ever at or above
     # what we paid, only while arbs are waiting for cash, at most one per cycle, and:
     rotate=True,
@@ -238,6 +242,8 @@ def run(cup, t, live, cfg, max_orders=0, locked=None, arb_info=None, reserved=0.
             rotated = True
 
         # entries: contest cheaper than fair value -- sized after the loop, best first
+        elif race_key(row["market_title"]) in cfg.get("no_buy_races", ()):
+            pass
         elif held >= 0 and lock >= 0 and wants_entry(ask, fair, cfg, sure, bar, days_left):
             candidates.append(((fair - ask) / ask, ex_id, "yes", ask, fair, held_cost, held != 0, name, sure))
             signal = f"edge YES {fair - ask:+.3f} ({(fair - ask) / ask:+.0%} return)"
