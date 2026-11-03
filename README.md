@@ -77,7 +77,7 @@ Races are called within hours of polls closing, but every contest market stays o
 trades that delay:
 - **Signal**: Kalshi and Polymarket are polled every 3 seconds (all ~230 contracts in ~1 s). A race counts as
   called only after all of its state's polls have closed, and when both sources hold the winner at ≥ 99%
-  for 30 s (safe races; safe races trade at 97-99% for weeks), ≥ 98% for 60 s (close races), ≥ 99.5% for
+  for 10 s (safe races; safe races trade at 97-99% for weeks), ≥ 98% for 60 s (close races), ≥ 99.5% for
   2 minutes with one source down, or at once when Kalshi records a result (its markets settle early on a
   consensus of media projections).
 - **Dead legs**: in a called race one leg of every arb pair is now worth 0, but the contest still pays for

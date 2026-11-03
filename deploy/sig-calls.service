@@ -9,7 +9,7 @@ Wants=network-online.target
 [Service]
 User=bot
 WorkingDirectory=/home/bot/sig-predictions-cup
-ExecStart=/home/bot/sig-predictions-cup/.venv/bin/python -u main.py calls --test --tournament midterm-elections
+ExecStart=/home/bot/sig-predictions-cup/.venv/bin/python -u main.py calls --tournament midterm-elections
 Restart=on-failure
 RestartSec=30
 KillSignal=SIGTERM

@@ -40,16 +40,17 @@ POLL_CLOSE = {
     "AL": 20, "CT": 20, "DE": 20, "FL": 20, "IL": 20, "ME": 20, "MD": 20, "MA": 20, "MS": 20, "MO": 20,
     "NH": 20, "NJ": 20, "OK": 20, "PA": 20, "RI": 20, "TN": 20, "AR": 20.5,
     "AZ": 21, "CO": 21, "KS": 21, "LA": 21, "MI": 21, "MN": 21, "NM": 21, "NY": 21, "SD": 21, "TX": 21,
-    "WI": 21, "WY": 21, "IA": 22, "MT": 22, "NE": 22, "NV": 22, "ND": 22, "UT": 22,
+    "WI": 21, "WY": 21, "IA": 21, "NE": 21, "MT": 22, "NV": 22, "ND": 22, "UT": 22,
     "CA": 23, "ID": 23, "OR": 23, "WA": 23, "HI": 24, "AK": 25,
 }
 CALLS = dict(
-    mode="shadow",             # "shadow" = log what it would do, "live" = trade, None = off
+    mode="live",               # "shadow" = log what it would do, "live" = trade, None = off
     test_polls_closed=False,   # shadow testing before the night: treat every state's polls as closed
     poll_s=3,                  # seconds between Kalshi/Polymarket polls
     stale_s=60,                # a source that hasn't answered for this long counts as down
     safe_level=0.95,           # a race whose favourite was >= 95% before the night is "safe"
-    call_safe=(0.99, 30),      # safe race, polls closed: both sources >= 99% for the winner for 30 s
+    call_safe=(0.99, 10),      # safe race, polls closed: both sources >= 99% for the winner for 10 s
+                               # (was 30 s; other bots trade the same calls, so the first seconds count)
     call_close=(0.98, 60),     # close race: >= 98% for 60 s (early returns swing)
     call_one=(0.995, 120),     # only one source answering: >= 99.5% for 2 minutes
                                # (a result recorded by Kalshi counts at once, unless Polymarket disagrees)
