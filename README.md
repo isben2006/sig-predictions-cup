@@ -82,8 +82,10 @@ trades that delay:
   consensus of media projections).
 - **Dead legs**: in a called race one leg of every arb pair is now worth 0, but the contest still pays for
   it; it is sold, and the other leg still pays 1 at settlement.
-- **Called winners**: bought with cash at ≤ 0.95. Cash is paced: before 9 pm ET at most 40% of it goes to
+- **Called winners**: bought with cash at ≤ 0.95 (≤ 0.90 from 9 pm, once the cash ran low). Cash is paced: before 9 pm ET at most 40% of it goes to
   the early safe-race wave unless the edge is ≥ 15 points; $3,000 per race, $6,000 per hour.
+- **Rotation**: when a buy at ≤ 0.90 is short of cash, shares on winners of races already called (outside pairs,
+  both sources still ≥ 98%) are sold at ≥ 0.95 to fund it: giving up ≤ 5 points to earn ≥ 10.
 - **Defensive exits**: shares outside pairs that the markets turn decisively against (≤ 30% for a minute)
   are sold while the contest still pays at least 5 points more than they are worth.
 - **Safety**: one batched order per race (no order-book read first; the limit price caps what we pay),

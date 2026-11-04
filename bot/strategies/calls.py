@@ -54,7 +54,8 @@ CALLS = dict(
     call_close=(0.98, 60),     # close race: >= 98% for 60 s (early returns swing)
     call_one=(0.995, 120),     # only one source answering: >= 99.5% for 2 minutes
                                # (a result recorded by Kalshi counts at once, unless Polymarket disagrees)
-    max_buy=0.95,              # buy a called winner only at or below 0.95 (a 5+ point edge)
+    max_buy=0.90,              # buy a called winner only at or below 0.90 (a 10+ point edge; 0.95 until 9 pm Nov 3,
+                               # when the contest priced calls within seconds and the cash ran low)
     min_dead=0.02,             # sell dead legs / lost shares down to this price (they're worth 0)
     race_cap=3000,             # cash per race
     hour_cap=6000,             # cash per rolling hour
@@ -62,6 +63,10 @@ CALLS = dict(
     pace_frac=0.40,            # ... spend at most 40% of the night's cash ...
     pace_edge=0.15,            # ... unless the edge is >= 15 points (close races called early)
     keep_cash=1000,            # never spend the last 1,000
+    rotate=True,               # out of cash for a buy at <= max_buy: sell winners of races already called ...
+    rot_floor=0.95,            # ... at >= 0.95 (gives up <= 5 points to earn >= 10) ...
+    rot_sure=0.98,             # ... while both sources still hold those winners at >= 98% ...
+    rot_min=300,               # ... and only for a shortfall of at least 300
     exit_level=0.30,           # pre-call defensive exit: our side fell to <= 30% at fair value ...
     exit_hold=60,              # ... for 60 s (both sources), and the contest still pays >= fair + exit_margin
     exit_margin=0.05,
@@ -245,6 +250,7 @@ class Night:
         self.src = Sources(self.races)
         self.state = self._load()
         self.since = {}                       # (kind, race, party) -> when the condition started holding
+        self.rot_sold = {}                    # exchange -> (when, shares) rotated out (positions lag the fills)
         self.pos, self.ledger, self.cash, self.pos_at = {}, {}, 0.0, 0.0
 
     # ---- state
@@ -293,14 +299,26 @@ class Night:
 
     def spent(self, race=None, within=None):
         now = time.time()
-        return sum(a for at, a, r in self.state["spent"]
+        return sum(a for at, a, r, *_ in self.state["spent"]
                    if (race is None or r == race) and (within is None or now - at < within))
 
-    def budget(self, race, edge, now):
+    def settle_spent(self, race):
+        """Replace this race's expired buy orders (counted at full size while resting) with what they filled."""
+        for e in self.state["spent"]:
+            if len(e) == 4 and e[2] == race and time.time() - e[0] >= self.cfg["order_ttl"]:
+                try:
+                    f = self.cup.order_fills(e[3])
+                    e[1] = round(abs(float(f["totalQuantityFilled"])) * float(f.get("avgFillPrice") or 0), 2)
+                    del e[3:]
+                except Exception as ex:
+                    print(f"    ! couldn't read fills of order {e[3]} ({ex}); still counting {e[1]:,.0f}")
+
+    def budget(self, race, edge, now, cash=True):
         """Cash we may put into one called race now: race and hourly caps, and before 9 pm ET at most
-        pace_frac of the night's cash unless the edge is big (better trades come later in the night)."""
+        pace_frac of the night's cash unless the edge is big (better trades come later in the night).
+        cash=False: the caps alone (what rotation may raise cash for)."""
         c, total = self.cfg, self.spent()
-        avail = self.cash - c["keep_cash"] if self.live else self.state["night_cash"] - total
+        avail = float("inf") if not cash else self.cash - c["keep_cash"] if self.live else self.state["night_cash"] - total
         room = min(avail, c["race_cap"] - self.spent(race), c["hour_cap"] - self.spent(within=3600))
         if now < ELECTION_DAY + timedelta(hours=c["pace_until"]) and edge < c["pace_edge"]:
             room = min(room, c["pace_frac"] * self.state["night_cash"] - total)
@@ -362,7 +380,7 @@ class Night:
     def send(self, legs):
         """legs = [(exchange, side, action, qty, limit price)] -> one /orders/batch write (live) or
         estimated fills from the order books (shadow). Returns [(leg, shares filled, money)]."""
-        out = []
+        out, self.oids = [], [None] * len(legs)
         if not self.live:
             for leg in legs:
                 book = self.cup.orderbook(self.tid, leg[0], 50)
@@ -378,16 +396,23 @@ class Night:
             {"exchangeId": ex, "side": side, "action": action, "quantity": int(qty), "price": round_tick(px),
              "tournamentId": self.tid, "expirationDate": exp} for ex, side, action, qty, px in legs]})
         results = res.get("results") or []
-        cash0 = self.cash
+        self.oids = [((next((x for x in results if x.get("index") == i), {}).get("data")) or {}).get("orderId")
+                     for i in range(len(legs))]
         self.refresh()
         for i, leg in enumerate(legs):
             r = next((x for x in results if x.get("index") == i), {})
             if not r.get("ok", True):
                 print(f"    ! rejected: {json.dumps(r)[:300]}")
+            # positions and cash lag the fills by a few seconds (Virginia: 150 filled, the diff said 0),
+            # so count from the order itself; the position diff is only the fallback
             n = abs(before.get(leg[0], 0) - self.pos.get(leg[0], 0))
+            oid = (r.get("data") or {}).get("orderId")
+            if oid:
+                try:
+                    n = abs(int(self.cup.order_fills(oid)["totalQuantityFilled"]))
+                except Exception as e:
+                    print(f"    ! couldn't read fills of order {oid} ({e}); using the position change {n}")
             out.append((leg, min(n, leg[3]), None))
-        if len(legs) == 1 and out:                       # one order per write -> the cash change is its money
-            out[0] = (out[0][0], out[0][1], round(abs(self.cash - cash0), 2))
         return out
 
     def unpair(self, race, dead_sold):
@@ -403,6 +428,59 @@ class Night:
         if all(q == 0 for q in legs.values()):
             del st[race]
         arb.save_state(st)
+
+    def raise_cash(self, need, skip):
+        """Rotation: sell shares on the winners of races already called (outside pairs, the markets still
+        sure of the call, contest bid >= rot_floor), highest bid first, until `need` is raised.
+        Returns (money raised, alert lines)."""
+        c, cands, lines = self.cfg, [], []
+        for race, a in self.state["acted"].items():
+            if race == skip or a.get("doubt") or race not in self.ex:
+                continue
+            i = "DR".index(a["winner"])
+            vals = [pp[i] for pp in self.src.probs(race, c["stale_s"]).values() if pp]
+            if not vals or min(vals) < c["rot_sure"]:
+                continue
+            w, l = self.ex[race][a["winner"]], self.ex[race]["R" if a["winner"] == "D" else "D"]
+            for ex, side, n in ((w, "yes", self.free(w)), (l, "no", -self.free(l))):
+                at, done = self.rot_sold.get(ex, (0, 0))
+                n -= done if time.time() - at < 120 else 0
+                if n > 0:
+                    cands.append((ex, side, n, race))
+        if not cands:
+            return 0.0, lines
+        quotes = self.cup.prices(self.tid, sorted({x[0] for x in cands}))
+        priced = []
+        for ex, side, n, race in cands:
+            q = quotes.get(ex, {})
+            bid = q.get("bestBid") if side == "yes" else (1 - q["bestAsk"] if q.get("bestAsk") else None)
+            if bid and bid >= c["rot_floor"]:
+                priced.append((bid, ex, side, n, race))
+        raised = 0.0
+        for bid, ex, side, n, race in sorted(priced, reverse=True):
+            if need - raised < 1:
+                break
+            k = min(n, -int(-(need - raised) // c["rot_floor"]))
+            for (leg, f, money), oid in zip(self.send([(ex, side, "sell", k, c["rot_floor"])]), self.oids):
+                if oid:                                  # cash now, not in 5 minutes: cancel what didn't fill
+                    try:
+                        self.cup.cancel(oid)
+                    except Exception:
+                        pass                             # already filled (or expired)
+                    try:
+                        fl = self.cup.order_fills(oid)
+                        f = min(k, abs(int(float(fl["totalQuantityFilled"]))))
+                        money = f * float(fl.get("avgFillPrice") or c["rot_floor"])
+                    except Exception as e:
+                        print(f"    ! couldn't read fills of order {oid} ({e}); counting {f:,} at the floor")
+                        money = f * c["rot_floor"]
+                money = money if money is not None else f * c["rot_floor"]
+                if f:
+                    at, done = self.rot_sold.get(ex, (0, 0))
+                    self.rot_sold[ex] = (time.time(), (done if time.time() - at < 120 else 0) + f)
+                    raised += money
+                    lines.append(f"rotation: sold {f:,} {side.upper()} in {race} for {money:,.0f} (~{money / f:.3f})")
+        return raised, lines
 
     # ---- actions
     def act_call(self, race, winner, quotes, now):
@@ -428,15 +506,29 @@ class Night:
                    ((qw.get("bestAsk"), w, "yes"), (1 - ql["bestBid"] if ql.get("bestBid") else None, l, "no")) if p]
         if choices:
             price, ex, side = min(choices)
+            self.settle_spent(race)
             room = self.budget(race, 1 - price, now) if price <= c["max_buy"] else 0
+            if price <= c["max_buy"] and c["rotate"] and self.live:
+                want = self.budget(race, 1 - price, now, cash=False)
+                if want - room >= c["rot_min"]:          # the caps allow more than the cash does
+                    got, rot_lines = self.raise_cash(want - room, race)
+                    lines += rot_lines
+                    room = min(want, room + got)
             qty = int(room / c["max_buy"])
             if qty > 0:
-                for leg, n, money in self.send([(ex, side, "buy", qty, c["max_buy"])]):
+                for (leg, n, money), oid in zip(self.send([(ex, side, "buy", qty, c["max_buy"])]), self.oids):
+                    # the rest of the order rests for order_ttl and keeps filling (Georgia: 176 at once, 2,025
+                    # in 5 minutes), so its full size counts against the caps until the next visit settles it
+                    if oid:
+                        self.state["spent"].append([time.time(), round(qty * c["max_buy"], 2), race, oid])
+                    elif n:
+                        self.state["spent"].append([time.time(), round(money if money is not None else n * price, 2), race])
                     if n:
-                        cost = money if money is not None else n * price
-                        self.state["spent"].append([time.time(), round(cost, 2), race])
+                        cost = n * price
                         lines.append(f"bought {n:,} {side.upper()} on {'winner' if ex == w else 'loser'} for {cost:,.0f}"
                                      f" ({n - cost:+,.0f} at settlement)")
+                    if oid and n < qty:
+                        lines.append(f"the other {qty - n:,} rest at <= {c['max_buy']:.2f} for {c['order_ttl'] // 60} min")
             elif price > c["max_buy"]:
                 lines.append(f"winner already at {price:.3f}: no buy")
             else:
@@ -504,7 +596,7 @@ class Night:
             lines, gained = self.act_call(race, winner, quotes, now)
             self.state["acted"].setdefault(race, {"winner": winner, "at": now.isoformat(timespec="seconds")})["last"] = time.time()
             self.save()
-            traded = any(x.startswith(("sold", "bought")) for x in lines)
+            traded = any(x.startswith(("sold", "bought", "rotation")) for x in lines)
             if first or traded:
                 head = f"{race}: called for {winner}" + ("" if first else " (revisit)")
                 self.report(head, lines, race=race, winner=winner, first=first)

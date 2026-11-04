@@ -1,0 +1,402 @@
+{
+ "class": {
+  "AL-02 House race": "close",
+  "AZ-01 House race": "close",
+  "AZ-06 House race": "close",
+  "Alabama Governor": "close",
+  "Alabama Senate": "safe",
+  "Alaska Senate": "close",
+  "Arizona Governor": "close",
+  "Arkansas Governor": "safe",
+  "Arkansas Senate": "safe",
+  "CA-22 House race": "close",
+  "CA-48 House race": "safe",
+  "CO-03 House race": "close",
+  "CO-04 House race": "close",
+  "CO-08 House race": "close",
+  "California Governor": "safe",
+  "Colorado Governor": "safe",
+  "Colorado Senate": "safe",
+  "Connecticut Governor": "safe",
+  "Delaware Senate": "safe",
+  "FL-07 House race": "close",
+  "FL-09 House race": "close",
+  "FL-13 House race": "close",
+  "FL-16 House race": "close",
+  "FL-20 House race": "safe",
+  "FL-22 House race": "close",
+  "Florida Governor": "close",
+  "Florida Senate": "close",
+  "Georgia Governor": "close",
+  "Georgia Senate": "safe",
+  "Hawaii Governor": "safe",
+  "IA-01 House race": "close",
+  "IA-02 House race": "close",
+  "IA-03 House race": "close",
+  "Idaho Governor": "safe",
+  "Idaho Senate": "safe",
+  "Illinois Governor": "safe",
+  "Illinois Senate": "safe",
+  "Iowa Governor": "close",
+  "Iowa Senate": "close",
+  "KY-04 House race": "safe",
+  "Kansas Governor": "close",
+  "Kansas Senate": "close",
+  "Kentucky Senate": "safe",
+  "Louisiana Senate": "close",
+  "ME-02 House race": "close",
+  "MI-07 House race": "close",
+  "MI-10 House race": "close",
+  "MN-01 House race": "close",
+  "MN-02 House race": "safe",
+  "MN-05 House race": "safe",
+  "MT-01 House race": "close",
+  "Maine Governor": "safe",
+  "Maine Senate": "close",
+  "Maryland Governor": "safe",
+  "Massachusetts Governor": "safe",
+  "Massachusetts Senate": "safe",
+  "Michigan Governor": "close",
+  "Michigan Senate": "close",
+  "Minnesota Governor": "safe",
+  "Minnesota Senate": "close",
+  "Mississippi Senate": "close",
+  "Montana Senate": "close",
+  "NE-02 House race": "close",
+  "NH-01 House race": "safe",
+  "NJ-07 House race": "safe",
+  "NY-13 House race": "safe",
+  "NY-17 House race": "close",
+  "Nebraska Governor": "close",
+  "Nebraska Senate": "close",
+  "Nevada Governor": "close",
+  "New Hampshire Governor": "close",
+  "New Hampshire Senate": "close",
+  "New Jersey Senate": "safe",
+  "New Mexico Governor": "close",
+  "New Mexico Senate": "safe",
+  "New York Governor": "safe",
+  "North Carolina Senate": "safe",
+  "Oklahoma Governor": "close",
+  "Oklahoma Senate": "safe",
+  "Oregon Governor": "close",
+  "Oregon Senate": "safe",
+  "PA-01 House race": "close",
+  "PA-07 House race": "close",
+  "PA-08 House race": "close",
+  "PA-10 House race": "close",
+  "Pennsylvania Governor": "safe",
+  "Rhode Island Governor": "safe",
+  "Rhode Island Senate": "safe",
+  "SC-01 House race": "close",
+  "South Carolina Governor": "close",
+  "South Carolina Senate": "close",
+  "South Dakota Governor": "safe",
+  "South Dakota Senate": "safe",
+  "TN-05 House race": "close",
+  "TX-15 House race": "close",
+  "TX-23 House race": "close",
+  "TX-28 House race": "close",
+  "Tennessee Governor": "close",
+  "Tennessee Senate": "safe",
+  "Texas Governor": "close",
+  "Texas Senate": "close",
+  "VA-01 House race": "close",
+  "VA-02 House race": "close",
+  "VA-05 House race": "close",
+  "VA-07 House race": "safe",
+  "Vermont Governor": "close",
+  "Virginia Senate": "safe",
+  "WA-03 House race": "close",
+  "WI-01 House race": "close",
+  "WI-03 House race": "close",
+  "West Virginia Senate": "safe",
+  "Wisconsin Governor": "close",
+  "Wyoming Governor": "safe",
+  "Wyoming Senate": "safe"
+ },
+ "acted": {
+  "Virginia Senate": {
+   "winner": "D",
+   "at": "2026-11-04T00:00:28+00:00",
+   "last": 1793760127.177242
+  },
+  "KY-04 House race": {
+   "winner": "R",
+   "at": "2026-11-04T00:17:27+00:00",
+   "last": 1793759976.9711215
+  },
+  "Georgia Senate": {
+   "winner": "D",
+   "at": "2026-11-04T00:23:21+00:00",
+   "last": 1793759986.3062813
+  },
+  "West Virginia Senate": {
+   "winner": "R",
+   "at": "2026-11-04T00:40:58+00:00",
+   "last": 1793760127.1782434
+  },
+  "Pennsylvania Governor": {
+   "winner": "D",
+   "at": "2026-11-04T01:00:13+00:00",
+   "last": 1793760066.43448
+  },
+  "Maryland Governor": {
+   "winner": "D",
+   "at": "2026-11-04T01:00:13+00:00",
+   "last": 1793760066.43555
+  },
+  "FL-20 House race": {
+   "winner": "D",
+   "at": "2026-11-04T01:02:02+00:00",
+   "last": 1793760186.2995677
+  },
+  "Illinois Senate": {
+   "winner": "D",
+   "at": "2026-11-04T01:03:08+00:00",
+   "last": 1793759976.9768662
+  },
+  "New Jersey Senate": {
+   "winner": "D",
+   "at": "2026-11-04T01:03:08+00:00",
+   "last": 1793759976.97577
+  },
+  "New Hampshire Senate": {
+   "winner": "D",
+   "at": "2026-11-04T01:03:58+00:00",
+   "last": 1793759998.7647254
+  },
+  "North Carolina Senate": {
+   "winner": "D",
+   "at": "2026-11-04T01:04:40+00:00",
+   "last": 1793760038.5743234
+  },
+  "Massachusetts Senate": {
+   "winner": "D",
+   "at": "2026-11-04T01:05:27+00:00",
+   "last": 1793760087.1790767
+  },
+  "Illinois Governor": {
+   "winner": "D",
+   "at": "2026-11-04T01:05:27+00:00",
+   "last": 1793760087.4537127
+  },
+  "Delaware Senate": {
+   "winner": "D",
+   "at": "2026-11-04T01:06:17+00:00",
+   "last": 1793760139.840585
+  },
+  "Massachusetts Governor": {
+   "winner": "D",
+   "at": "2026-11-04T01:10:29+00:00",
+   "last": 1793760087.1799643
+  },
+  "Rhode Island Senate": {
+   "winner": "D",
+   "at": "2026-11-04T01:13:31+00:00",
+   "last": 1793759976.9682324
+  },
+  "FL-13 House race": {
+   "winner": "R",
+   "at": "2026-11-04T01:21:22+00:00",
+   "last": 1793760131.1522276
+  },
+  "Florida Governor": {
+   "winner": "R",
+   "at": "2026-11-04T01:32:05+00:00",
+   "last": 1793760170.8734887
+  },
+  "Florida Senate": {
+   "winner": "R",
+   "at": "2026-11-04T01:38:04+00:00",
+   "last": 1793759976.9735308
+  },
+  "Rhode Island Governor": {
+   "winner": "D",
+   "at": "2026-11-04T01:40:58+00:00",
+   "last": 1793760114.989051
+  },
+  "Tennessee Senate": {
+   "winner": "R",
+   "at": "2026-11-04T01:42:20+00:00",
+   "last": 1793760176.9411256
+  },
+  "FL-22 House race": {
+   "winner": "D",
+   "at": "2026-11-04T01:43:07+00:00",
+   "last": 1793759976.9746652
+  },
+  "VA-07 House race": {
+   "winner": "D",
+   "at": "2026-11-04T01:53:47+00:00",
+   "last": 1793759976.9696808
+  },
+  "Colorado Senate": {
+   "winner": "D",
+   "at": "2026-11-04T02:00:12+00:00",
+   "last": 1793760038.5729554
+  },
+  "PA-08 House race": {
+   "winner": "D",
+   "at": "2026-11-04T02:00:50+00:00",
+   "last": 1793760085.2704995
+  },
+  "New York Governor": {
+   "winner": "D",
+   "at": "2026-11-04T02:00:50+00:00",
+   "last": 1793760078.8417375
+  },
+  "Michigan Governor": {
+   "winner": "D",
+   "at": "2026-11-04T02:01:03+00:00",
+   "last": 1793760108.7803738
+  },
+  "Colorado Governor": {
+   "winner": "D",
+   "at": "2026-11-04T02:04:23+00:00",
+   "last": 1793759986.3052907
+  },
+  "Georgia Governor": {
+   "winner": "D",
+   "at": "2026-11-04T02:10:14+00:00",
+   "last": 1793760035.5062075
+  },
+  "NY-13 House race": {
+   "winner": "D",
+   "at": "2026-11-04T02:16:15+00:00",
+   "last": 1793760093.2101338
+  },
+  "New Mexico Senate": {
+   "winner": "D",
+   "at": "2026-11-04T02:19:27+00:00",
+   "last": 1793759980.0648184
+  },
+  "Louisiana Senate": {
+   "winner": "R",
+   "at": "2026-11-04T02:21:10+00:00",
+   "last": 1793760087.1782196
+  },
+  "Wyoming Senate": {
+   "winner": "R",
+   "at": "2026-11-04T02:21:57+00:00",
+   "last": 1793760131.1509354
+  },
+  "Wyoming Governor": {
+   "winner": "R",
+   "at": "2026-11-04T02:24:26+00:00",
+   "last": 1793759976.97233
+  },
+  "Connecticut Governor": {
+   "winner": "D",
+   "at": "2026-11-04T02:24:38+00:00",
+   "last": 1793760005.505447
+  },
+  "Oklahoma Senate": {
+   "winner": "R",
+   "at": "2026-11-04T02:25:23+00:00",
+   "last": 1793760035.5053477
+  },
+  "Texas Senate": {
+   "winner": "D",
+   "at": "2026-11-04T02:25:57+00:00",
+   "last": 1793760069.5252712
+  },
+  "Kentucky Senate": {
+   "winner": "R",
+   "at": "2026-11-04T02:26:27+00:00",
+   "last": 1793760099.3967633
+  },
+  "Arizona Governor": {
+   "winner": "D",
+   "at": "2026-11-04T02:27:27+00:00",
+   "last": 1793760158.4146683
+  },
+  "NH-01 House race": {
+   "winner": "D",
+   "at": "2026-11-04T02:30:29+00:00",
+   "last": 1793760035.5043583
+  },
+  "VA-02 House race": {
+   "winner": "D",
+   "at": "2026-11-04T02:31:18+00:00",
+   "last": 1793760087.715648
+  },
+  "South Carolina Senate": {
+   "winner": "D",
+   "at": "2026-11-04T02:31:18+00:00",
+   "last": 1793760087.4517047
+  },
+  "Oklahoma Governor": {
+   "winner": "R",
+   "at": "2026-11-04T02:36:18+00:00",
+   "last": 1793760087.177275
+  },
+  "FL-16 House race": {
+   "winner": "R",
+   "at": "2026-11-04T02:37:21+00:00",
+   "last": 1793760146.2465158
+  },
+  "Vermont Governor": {
+   "winner": "R",
+   "at": "2026-11-04T02:41:20+00:00",
+   "last": 1793760084.994633
+  },
+  "New Mexico Governor": {
+   "winner": "D",
+   "at": "2026-11-04T02:41:25+00:00",
+   "last": 1793760087.180968
+  },
+  "PA-07 House race": {
+   "winner": "D",
+   "at": "2026-11-04T02:41:25+00:00",
+   "last": 1793760087.4547887
+  }
+ },
+ "exited": {
+  "Texas Governor": 1793759955.2289555
+ },
+ "virtual": {},
+ "spent": [
+  [
+   1793753015.50204,
+   2303.75,
+   "Georgia Senate"
+  ],
+  [
+   1793753625.2779632,
+   392.35,
+   "Georgia Senate"
+  ],
+  [
+   1793754673.8496609,
+   1703.35,
+   "Virginia Senate"
+  ],
+  [
+   1793757654.0889673,
+   2983.96,
+   "PA-08 House race"
+  ],
+  [
+   1793757675.7951257,
+   1296.75,
+   "Michigan Governor"
+  ],
+  [
+   1793757982.554409,
+   15.04,
+   "Michigan Governor"
+  ],
+  [
+   1793758290.442944,
+   1682.39,
+   "Michigan Governor"
+  ],
+  [
+   1793758294.6060553,
+   15.12,
+   "Rhode Island Governor"
+  ]
+ ],
+ "night_cash": 11000.86
+}
