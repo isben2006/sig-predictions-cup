@@ -1,7 +1,7 @@
 # Predictions Cup trading bots
 
 Automated trading for the SIG Predictions Cup, a play-money prediction-market contest on the
-2026 US midterm elections (~3,900 participants, Oct 1 – Nov 4 2026). Two strategies run in one
+2026 US midterm elections (1,969 traders, Oct 1 – Nov 4 2026). Two strategies run in one
 loop against the contest's REST API:
 
 1. **Fair-value gap trading** (`bot/strategies/gap.py`): prices every contest contract against the
@@ -141,7 +141,8 @@ deploy/
   sig-bot.service          systemd unit for the trading loop
   sig-mm.service           systemd unit for the market maker
   sig-calls.service        systemd unit for the election-night bot
-data/                      mapping.csv, stats.csv, arb_races.json (live arb ledger, not in git)
+data/                      mapping.csv, stats.csv, election-night state and action log (calls_*),
+                           arb_races.json (live arb ledger, not in git)
 logs/                      bot.log (not in git)
 ```
 
@@ -187,5 +188,33 @@ deploy/deploy.sh logs | status | stop | restart
 ```
 
 ## Results
-*Updated at the end of the contest (Nov 4 2026): final rank, P&L, Sharpe ratio and max drawdown,
-from `stats.csv`.*
+*Provisional (Nov 5 2026). Trading closed on Nov 4; markets settle at 0/1 over the following weeks, and
+the final standings lock once every market has settled.*
+
+| | |
+|---|---|
+| Projected final P&L | **+$22.7k** (+22.7% on the $100k start); +$27.6k if Mississippi Senate flips |
+| Projected rank | ~200 of 1,969 ranked traders (~top 10%) |
+| Volume traded | $2.6M |
+| Sharpe ratio (contest-reported) | 8.3 |
+| Best leaderboard rank | 101 of 1,784 (Oct 26) |
+
+- **Where the projection comes from**: of the 37 races still held, 36 are already resolved or ≥ 99% for
+  our side on Kalshi/Polymarket (MN-01 is hedged to pay the same either way). Only Mississippi Senate
+  (~3%) is open, and it can only add.
+- **Why the live leaderboard shows less** (+$5.4k, rank 487 on Nov 5): it values positions at the
+  contest's recent trade prices. After trading closed, a few thin trades left called winners marked far
+  below the $1 they pay (Rhode Island Senate D at 0.53 with Kalshi at 99.8%). Settlement removes that gap.
+- **Election night**: the calls bot acted on 106 races and bought $18.5k of called winners, most at
+  0.90–0.95. The contest repriced most calls within seconds, so the edge per race was small.
+- **What went wrong**: Mississippi Senate, held from before the election with the Republican favored,
+  flipped overnight after the close (about −$4k). Two bugs surfaced live on election night and were fixed
+  within the hour: fills were counted from positions that lag by seconds, and resting orders kept filling
+  without counting against the per-race caps.
+- **Lessons**: a contest leaderboard marks at thin trade prices, so measure against fair value
+  (`stats.csv` tracks both); in a play-money field half the players finish at or below zero and the top is
+  won by all-in bets, so a low-risk strategy aims for the top decile, not first place; the market maker's
+  shadow results never beat leaving the cash in the arb.
+
+## License
+MIT

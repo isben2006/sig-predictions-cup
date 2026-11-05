@@ -6,6 +6,11 @@ logs/
 *.log
 data/arb_races*.json
 data/backups/
+data/*.bak-*
+data/*livetest*
+
+# one-off analysis input (trade-tape scan, ~6 MB)
+data/crowd_scan.json
 
 # the platform's own API spec (download it from the contest site)
 api-1.json
